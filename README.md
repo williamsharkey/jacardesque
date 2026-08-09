@@ -1,5 +1,36 @@
-Jacquard
-========
+Jacquardesque
+=============
+
+**Jacquardesque** is a public fork of
+[**keijiro/Jacquard**](https://github.com/keijiro/Jacquard) by
+[Keijiro Takahashi](https://github.com/keijiro).
+
+This repository starts from that project so we can experiment and extend it
+while giving clear credit to the original work. Jacquard itself remains the
+upstream prototype; Jacquardesque is not a rebrand of the original author’s
+project.
+
+| | |
+| --- | --- |
+| Upstream | [github.com/keijiro/Jacquard](https://github.com/keijiro/Jacquard) |
+| This fork | [github.com/williamsharkey/jacardesque](https://github.com/williamsharkey/jacardesque) |
+| Play the demo | [williamsharkey.github.io/jacardesque](https://williamsharkey.github.io/jacardesque/) |
+
+Play the demo
+-------------
+
+The browser demo is the static UI mockup from the original project, published
+via **GitHub Pages**:
+
+**[https://williamsharkey.github.io/jacardesque/](https://williamsharkey.github.io/jacardesque/)**
+
+(Also available as [`docs/mockup.html`](docs/mockup.html) in this repo.)
+
+The full interactive sequencer is a Unity project (see below). The Pages demo
+is the look/layout mockup, not a WebGL build of the Unity app.
+
+About Jacquard (upstream)
+-------------------------
 
 A prototype grid sequencer. Lanes of steps are laid out anywhere on one plane; a
 step stacks what happens at the same instant; gates, parameter locks and jumps
@@ -55,12 +86,22 @@ Documentation
 
 | | |
 | --- | --- |
-| [Docs/prototype.md] | What this prototype is for |
-| [Docs/sequencer.md] | The sequencer specification |
-| [Docs/mockup.html] | The static mockup the look comes from |
-| [Docs/implementation.md] | How it is built, and the decisions behind it |
+| [docs/prototype.md] | What this prototype is for |
+| [docs/sequencer.md] | The sequencer specification |
+| [docs/mockup.html] | The static mockup the look comes from (also the GitHub Pages demo) |
+| [docs/implementation.md] | How it is built, and the decisions behind it |
 
-[Docs/prototype.md]: Docs/prototype.md
-[Docs/sequencer.md]: Docs/sequencer.md
-[Docs/mockup.html]: Docs/mockup.html
-[Docs/implementation.md]: Docs/implementation.md
+[docs/prototype.md]: docs/prototype.md
+[docs/sequencer.md]: docs/sequencer.md
+[docs/mockup.html]: docs/mockup.html
+[docs/implementation.md]: docs/implementation.md
+
+Credit
+------
+
+Original project: **[Jacquard](https://github.com/keijiro/Jacquard)** by
+**[Keijiro Takahashi](https://github.com/keijiro)** ([@keijiro](https://github.com/keijiro)).
+
+Jacquardesque keeps that provenance visible: this is a fork, not an independent
+reimplementation. Please prefer starring and following the upstream repository
+for the author’s work.
