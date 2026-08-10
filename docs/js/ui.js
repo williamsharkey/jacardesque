@@ -849,19 +849,28 @@ export class ScoreView {
     const o = Style.cellOrigin({ x: mod.x, y: mod.y });
     const w = mod.w * Style.StrideX - Style.Gap;
     const h = mod.h * Style.StrideY - Style.Gap;
-    ctx.fillStyle = selected ? "#2a2438" : "#1e1e28";
-    ctx.strokeStyle = selected ? "#c4b5fd" : "#6d6a7a";
+    const def = FxTypes[mod.type] || FxTypes.delay;
+    const isPat = !!def.patternOp;
+    ctx.fillStyle = selected
+      ? (isPat ? "#1a2e24" : "#2a2438")
+      : (isPat ? "#152018" : "#1e1e28");
+    ctx.strokeStyle = selected
+      ? (isPat ? "#6ee7b7" : "#c4b5fd")
+      : (isPat ? "#3f6b55" : "#6d6a7a");
     ctx.lineWidth = selected ? 1.5 : 1;
     roundRect(ctx, o.x, o.y, w, h, 6);
     ctx.fill();
     ctx.stroke();
 
-    const def = FxTypes[mod.type] || FxTypes.delay;
-    ctx.fillStyle = "#e9e5ff";
+    ctx.fillStyle = isPat ? "#d1fae5" : "#e9e5ff";
     ctx.font = "700 11px system-ui,sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText(def.label, o.x + 6, o.y + 5);
+    if (mod.type === "patgo") {
+      ctx.font = "600 10px system-ui,sans-serif";
+      ctx.fillText("#" + ((mod.params.n | 0) + 1), o.x + 6, o.y + 20);
+    }
 
     let y = o.y + 22;
     for (const p of def.params) {
@@ -1850,31 +1859,47 @@ export class JacquardUI {
     panel.append(el("div", "panel-title", def.name));
     const body = el("div", "panel-body");
     panel.append(body);
-    body.append(el("div", "caption",
-      "Gold ◆ next to a param: drag onto the grid = automation. " +
-      "⌥/⌘-drag from a step to this pedal = path send window. " +
-      "Drag pedal→pedal = chain."));
+    if (def.patternOp) {
+      body.append(el("div", "caption",
+        "Fires when the playhead column hits this object. " +
+        "P+ / P− step the pattern bank; P→ jumps to pattern # (1-based bar), " +
+        "always modulo the number of patterns. Transport beat keeps running."));
+    } else {
+      body.append(el("div", "caption",
+        "Gold ◆ next to a param: drag onto the grid = automation. " +
+        "⌥/⌘-drag from a step to this pedal = path send window. " +
+        "Drag pedal→pedal = chain."));
+    }
     body.append(el("div", "divider"));
     for (const p of def.params) {
+      const range = p.key === "n"
+        ? makeRange({
+          low: p.min,
+          high: p.max,
+          snap: 1,
+          digits: 0,
+          display: (v) => "#" + (Math.round(v) + 1),
+        })
+        : Ranges.amount(p.min, p.max);
       body.append(barRow(
         p.label,
-        Ranges.amount(p.min, p.max),
+        range,
         () => mod.params[p.key] ?? p.def,
         (v) => {
-          mod.params[p.key] = v;
+          mod.params[p.key] = p.key === "n" ? Math.round(v) : v;
           this.app.scheduleSave();
           this.view.paint();
         },
       ));
     }
     body.append(el("div", "divider"));
-    body.append(button("Delete pedal", () => {
+    body.append(button("Delete", () => {
       this.editor.deleteAtCursor();
       this.editor.selectedFxId = null;
       this.view.selectedFxId = null;
       this.refreshPanels(true);
       this.canvas.focus();
-    }, 90));
+    }, 70));
   }
 
   update() {
@@ -1885,8 +1910,12 @@ export class JacquardUI {
     this.tempoBar.sync?.();
     const st = this.app.audio.status;
     const listing = this.app.store.listing();
+    const beat = this.app.sequencer?.isPlaying
+      ? " · ♩" + (this.app.globalBeat | 0)
+      : "";
     this.status.textContent =
       listing +
+      beat +
       (this.app.message ? " · " + this.app.message : "") +
       (st ? ` · v${st.activeVoices}` : "");
   }

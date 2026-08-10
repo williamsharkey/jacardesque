@@ -1251,14 +1251,18 @@ function readFxMod(score, tokens, number) {
     else params[k] = readFloat(v);
   }
   if (!score.fxModules) score.fxModules = [];
+  const isPat = type === "pat+" || type === "pat-" || type === "patgo" || type === "pan";
+  const isTall = type === "delay" || type === "reverb";
   score.fxModules.push({
     id: id || ("fx-" + score.fxModules.length),
     type,
     x,
     y,
-    w: type === "pan" ? 2 : 3,
-    h: (type === "delay" || type === "reverb") ? 3 : 2,
-    params: Object.keys(params).length ? params : { mix: 0.35 },
+    w: isPat || type === "pan" ? 2 : 3,
+    h: isTall ? 3 : 2,
+    params: Object.keys(params).length
+      ? params
+      : (type.startsWith("pat") ? (type === "patgo" ? { n: 0 } : {}) : { mix: 0.35 }),
   });
 }
 
@@ -1561,6 +1565,50 @@ export class Sequencer {
     for (const lane of this.project.score.channelLanes) {
       this._runners.push(new Runner(lane, order++, start));
     }
+    this._playing = this._runners.length > 0;
+  }
+
+  /**
+   * Phase-align runners to a continuous song clock so pattern switches
+   * never restart time — only remap step positions onto the same sample timeline.
+   *
+   * songOriginSample: sample when transport first started (monotonic anchor).
+   * currentSample: now.
+   */
+  playAligned(currentSample, lookaheadSamples, songOriginSample, sampleRate) {
+    this._playing = false;
+    for (const r of this._runners) r.clearPlayhead();
+    this._runners.length = 0;
+
+    const origin = songOriginSample;
+    const now = currentSample;
+    let order = 0;
+
+    for (const lane of this.project.score.channelLanes) {
+      const stepSamples = Math.max(
+        1,
+        lane.channel.stepSeconds(this.project.tempo) * sampleRate,
+      );
+      const n = Math.max(1, lane.steps.length);
+      // How many complete steps have elapsed since song origin.
+      const elapsed = Math.max(0, now - origin);
+      const totalSteps = Math.floor(elapsed / stepSamples);
+      const stepIndex = ((totalSteps % n) + n) % n;
+      const pass = Math.floor(totalSteps / n);
+      // Next boundary on the global grid — never behind "now".
+      let next = origin + (totalSteps + 1) * stepSamples;
+      if (next < now + 1) next = now + stepSamples;
+
+      const runner = new Runner(lane, order++, next);
+      runner.stepIndex = stepIndex;
+      runner.pass = pass;
+      runner.lane = lane;
+      // Playhead shows the step currently sounding (the one we are in).
+      runner.playingLane = lane;
+      runner.playingStep = stepIndex;
+      this._runners.push(runner);
+    }
+
     this._playing = this._runners.length > 0;
   }
 

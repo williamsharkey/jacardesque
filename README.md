@@ -32,7 +32,9 @@ The web app ports the sequencer fully, then extends the sound engine for the bro
 - **Auto-save sketches** — `‹ ›` switches instantly, `+` duplicates, **New** blanks; no Load/Save
 - **Twenty factory haiku sketches** (10 musical, 10 FX-dimension) with sticky notes
 - **Grid FX pedals** (delay/reverb/distort/filter/pan): path-windowed sends, pedal chains, automation diamonds
-- Score format `.jacquard` v10 (`fxmod`, `pathroute`, `fxroute`, `auto`)
+- **Seamless multi-pattern clock** — monotonic global beat; pattern switches never rewind transport
+- **META objects on the grid**: `P+` / `P−` / `P→n` (modulo pattern bank) for arranging songs from patterns
+- Score format `.jacquard` v10 (`fxmod`, `pathroute`, `fxroute`, `auto`, pattern modules)
 
 ### Sound engine choices (research)
 

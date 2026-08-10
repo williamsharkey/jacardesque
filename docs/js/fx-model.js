@@ -62,6 +62,34 @@ export const FxTypes = {
       { key: "width", label: "Wid", min: 0, max: 1, def: 0.5 },
     ],
   },
+  // Pattern transport objects — fire when a runner's column hits this module.
+  "pat+": {
+    label: "P+",
+    name: "Pattern +",
+    w: 2,
+    h: 2,
+    params: [],
+    patternOp: "inc",
+  },
+  "pat-": {
+    label: "P−",
+    name: "Pattern −",
+    w: 2,
+    h: 2,
+    params: [],
+    patternOp: "dec",
+  },
+  patgo: {
+    label: "P→",
+    name: "Pattern jump",
+    w: 2,
+    h: 2,
+    params: [
+      // 0-based pattern index; UI shows 1-based. Always modulo slot count.
+      { key: "n", label: "To #", min: 0, max: 63, def: 0 },
+    ],
+    patternOp: "jump",
+  },
 };
 
 export const FxTypeKeys = Object.keys(FxTypes);
@@ -85,6 +113,56 @@ export function createFxModule(type, x, y, id = null) {
     h: def.h,
     params: defaultParams(type),
   };
+}
+
+export function isPatternModule(mod) {
+  return !!FxTypes[mod?.type]?.patternOp;
+}
+
+export function patternOpOf(mod) {
+  return FxTypes[mod?.type]?.patternOp || null;
+}
+
+/**
+ * Collect pattern-control fires for this frame's playhead columns.
+ * Returns list of { op: 'inc'|'dec'|'jump', n?: number, id } unique per module per column hit.
+ */
+export function collectPatternTriggers(score, runners, lastFired) {
+  ensureFxLists(score);
+  const triggers = [];
+  if (!runners?.length) return triggers;
+
+  const cols = new Map(); // col -> true
+  for (const r of runners) {
+    if (r.playingLane != null && r.playingStep >= 0) {
+      cols.set(r.playingLane.x + r.playingStep, true);
+    }
+  }
+
+  for (const mod of score.fxModules) {
+    const op = patternOpOf(mod);
+    if (!op) continue;
+    // Fire when playhead column intersects the module's x span
+    let hit = false;
+    for (let dx = 0; dx < mod.w; dx++) {
+      if (cols.has(mod.x + dx)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+    // Debounce: only once while continuously overlapping the same column set key
+    const key = mod.id + "@" + [...cols.keys()].sort((a, b) => a - b).join(",");
+    if (lastFired && lastFired.get(mod.id) === key) continue;
+    if (lastFired) lastFired.set(mod.id, key);
+    triggers.push({
+      op,
+      n: Math.round(mod.params?.n ?? 0),
+      id: mod.id,
+      key,
+    });
+  }
+  return triggers;
 }
 
 /**

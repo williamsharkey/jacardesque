@@ -113,6 +113,7 @@ export class ScoreEditor {
         }
       }
       const mod = createFxModule(type, point.x, point.y);
+      if (spec.n != null && mod.params) mod.params.n = spec.n | 0;
       this.score.fxModules.push(mod);
       this.selectedFxId = mod.id;
       this.commit();

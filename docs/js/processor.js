@@ -659,6 +659,7 @@ class FxModuleRuntime {
     else if (type === "distort") this.engine = new ModDistort();
     else if (type === "filter") this.engine = new ModFilter();
     else if (type === "pan") this.engine = new ModPan();
+    else if (type === "pat+" || type === "pat-" || type === "patgo") this.engine = null; // control only
     else this.engine = new ModDelay(sampleRate);
   }
 
@@ -677,6 +678,7 @@ class FxModuleRuntime {
   }
 
   process(n, sampleRate) {
+    if (!this.engine) return; // pattern control modules are silent
     const p = this.params;
     if (this.type === "delay") {
       this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p, sampleRate);
@@ -717,9 +719,13 @@ class GridFxGraph {
       this.enabled = false;
       return;
     }
-    this.enabled = msg.modules.length > 0;
+    // Pattern-control modules are not audio engines.
+    const audioMods = (msg.modules || []).filter(
+      (m) => m.type !== "pat+" && m.type !== "pat-" && m.type !== "patgo",
+    );
+    this.enabled = audioMods.length > 0;
     const seen = new Set();
-    for (const m of msg.modules) {
+    for (const m of audioMods) {
       seen.add(m.id);
       let rt = this.modules.get(m.id);
       if (!rt || rt.type !== m.type) {

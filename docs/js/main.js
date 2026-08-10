@@ -1,11 +1,15 @@
-// Jacquardesque web app — multi-timbre worklet + auto-save sketches.
+// Jacquardesque — multi-timbre worklet, grid FX, seamless multi-pattern clock.
 
 import { Project, Sequencer } from "./core.js";
 import { AudioEngine } from "./audio.js";
 import { ScoreEditor } from "./editor.js";
 import { ProjectStore } from "./store.js";
 import { JacquardUI } from "./ui.js";
-import { buildFxGraphMessage, ensureFxLists } from "./fx-model.js";
+import {
+  buildFxGraphMessage,
+  ensureFxLists,
+  collectPatternTriggers,
+} from "./fx-model.js";
 
 const LOOKAHEAD = 0.12;
 const MAX_VOICES = 32;
@@ -31,6 +35,12 @@ class App {
     this._raf = 0;
     this._saveTimer = 0;
     this.message = boot.message || "";
+
+    // Global song clock — never rewinds while transport is running.
+    this.songOriginSample = 0;
+    this.globalBeat = 0; // monotonic sixteenth-note count at active tempo
+    this._patternFire = new Map(); // debounce pattern modules
+    this._switching = false;
   }
 
   async boot() {
@@ -65,9 +75,15 @@ class App {
 
     if (this.sequencer.isPlaying) {
       this.sequencer.stop();
+      this._patternFire.clear();
     } else {
       this.audio.setFx(this.project.fx, this.project.tempo);
-      this.sequencer.play(this.audio.pollSample(), this.audio.lookaheadSamples);
+      const now = this.audio.pollSample();
+      // Anchor song clock at play start (lookahead so first step is clean).
+      this.songOriginSample = now + this.audio.lookaheadSamples;
+      this.globalBeat = 0;
+      this._patternFire.clear();
+      this.sequencer.play(now, this.audio.lookaheadSamples);
     }
     this.ui.view.refreshPlayheads();
   }
@@ -81,53 +97,131 @@ class App {
     }, AUTOSAVE_MS);
   }
 
-  applyProject(project, message) {
+  /**
+   * Load a project. If keepClock and currently playing, phase-align so the
+   * global beat continues — no transport restart, no missed grid.
+   */
+  applyProject(project, message, { keepClock = false } = {}) {
     if (!project) {
       this.message = message || "load failed";
       return;
     }
-    this.sequencer.stop();
+
+    const playing = this.sequencer.isPlaying && keepClock;
+    const now = this.audio.ready ? this.audio.pollSample() : 0;
+    const origin = this.songOriginSample;
+    const sr = this.audio.sampleRate || 48000;
+
+    if (!playing) this.sequencer.stop();
+
     this.project = project;
     this.sequencer.project = project;
     this.editor.project = project;
     if (this.audio.ready) this.audio.setFx(this.project.fx, this.project.tempo);
     this.message = message || this.store.name;
     this.ui?.onChanged();
+
+    if (playing) {
+      // Resume on the same sample timeline; remap steps via playAligned.
+      this.sequencer.playAligned(now, this.audio.lookaheadSamples, origin, sr);
+      this._patternFire.clear();
+    }
+  }
+
+  /** Pattern navigation with optional seamless clock (default true when playing). */
+  switchPattern(op, n = 0) {
+    if (this._switching) return;
+    this._switching = true;
+    try {
+      this.store.save(this.project);
+      let result;
+      if (op === "inc") result = this.store.gotoPattern(1);
+      else if (op === "dec") result = this.store.gotoPattern(-1);
+      else if (op === "jump") result = this.store.gotoPattern(n, { absolute: true });
+      else result = this.store.gotoPattern(0);
+
+      const keepClock = this.sequencer.isPlaying;
+      this.applyProject(result.project, result.message, { keepClock });
+      this.message = (keepClock ? "↻ " : "") + (result.message || "");
+    } finally {
+      this._switching = false;
+    }
   }
 
   prevSketch() {
-    this.store.save(this.project);
-    const { project, message } = this.store.step(-1);
-    this.applyProject(project, message);
+    this.switchPattern("dec");
   }
 
   nextSketch() {
-    this.store.save(this.project);
-    const { project, message } = this.store.step(1);
-    this.applyProject(project, message);
+    this.switchPattern("inc");
   }
 
   duplicateSketch() {
     this.store.save(this.project);
     const { project, message } = this.store.duplicate(this.project);
-    this.applyProject(project, message);
+    this.applyProject(project, message, { keepClock: false });
   }
 
   newSketch() {
     this.store.save(this.project);
     const { project, message } = this.store.createEmpty();
-    this.applyProject(project, message);
+    this.applyProject(project, message, { keepClock: false });
   }
 
-  // legacy names used by tests
   save() {
     return this.store.save(this.project);
   }
 
   load() {
     const { project, message } = this.store.load();
-    this.applyProject(project, message);
+    this.applyProject(project, message, { keepClock: this.sequencer.isPlaying });
     return message;
+  }
+
+  _updateGlobalBeat(sample) {
+    if (!this.sequencer.isPlaying) return;
+    const tempo = Math.max(1, this.project.tempo);
+    // Sixteenth-note beats at the active pattern tempo — monotonic while playing.
+    const samplesPer16th = (60 / tempo) * (4 / 16) * this.audio.sampleRate;
+    if (samplesPer16th <= 0) return;
+    this.globalBeat = Math.max(
+      this.globalBeat,
+      Math.floor(Math.max(0, sample - this.songOriginSample) / samplesPer16th),
+    );
+  }
+
+  _handlePatternModules() {
+    if (!this.sequencer.isPlaying || this._switching) return;
+    ensureFxLists(this.project.score);
+    // Clear debounce for modules no longer under playhead
+    const triggers = collectPatternTriggers(
+      this.project.score,
+      this.sequencer.runners,
+      this._patternFire,
+    );
+    // Prune stale debounce keys when columns move
+    const live = new Set(triggers.map((t) => t.id));
+    for (const id of [...this._patternFire.keys()]) {
+      if (!live.has(id)) {
+        // Keep until column changes — collectPatternTriggers sets key only on fire.
+        // Drop entries for modules that didn't hit this frame so re-entry can fire.
+        let still = false;
+        for (const r of this.sequencer.runners) {
+          if (r.playingLane == null || r.playingStep < 0) continue;
+          const col = r.playingLane.x + r.playingStep;
+          const mod = this.project.score.fxModules.find((m) => m.id === id);
+          if (!mod) continue;
+          if (col >= mod.x && col < mod.x + mod.w) still = true;
+        }
+        if (!still) this._patternFire.delete(id);
+      }
+    }
+
+    for (const t of triggers) {
+      this.switchPattern(t.op, t.n | 0);
+      // Only one switch per tick (avoid multi-fire cascades).
+      break;
+    }
   }
 
   _tick() {
@@ -138,6 +232,8 @@ class App {
     }
 
     const sample = this.audio.pollSample();
+    this._updateGlobalBeat(sample);
+
     this._pending.length = 0;
     this.sequencer.schedule(
       sample,
@@ -146,6 +242,9 @@ class App {
       this._pending,
     );
     if (this._pending.length) this.audio.scheduleMany(this._pending);
+
+    this._handlePatternModules();
+
     this.audio.setFx(this.project.fx, this.project.tempo);
     ensureFxLists(this.project.score);
     this.audio.setFxGraph(buildFxGraphMessage(

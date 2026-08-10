@@ -76,6 +76,21 @@ export function buildPlaceCategories(centreNote = 60) {
       ],
       defaultItem: 0,
     },
+    {
+      id: "meta",
+      label: "META",
+      items: [
+        { label: "PAT +", place: { kind: "FX", fxType: "pat+" } },
+        { label: "PAT −", place: { kind: "FX", fxType: "pat-" } },
+        { label: "PAT →0", place: { kind: "FX", fxType: "patgo", n: 0 } },
+        { label: "PAT →1", place: { kind: "FX", fxType: "patgo", n: 1 } },
+        { label: "PAT →2", place: { kind: "FX", fxType: "patgo", n: 2 } },
+        { label: "PAT →3", place: { kind: "FX", fxType: "patgo", n: 3 } },
+        { label: "PAT →4", place: { kind: "FX", fxType: "patgo", n: 4 } },
+        { label: "PAT →5", place: { kind: "FX", fxType: "patgo", n: 5 } },
+      ],
+      defaultItem: 0,
+    },
   ];
 }
 

@@ -46,6 +46,25 @@ export class ProjectStore {
     return i < 0 ? 0 : i;
   }
 
+  /** Pattern count for modulo wrap. */
+  patternCount() {
+    return Math.max(1, this.slots().length);
+  }
+
+  /**
+   * Jump to pattern index with wrap (never lands outside the bank).
+   * delta: relative, or absolute if absolute=true.
+   */
+  gotoPattern(indexOrDelta, { absolute = false } = {}) {
+    const slots = this.slots();
+    const n = slots.length;
+    if (!n) return { project: null, message: "no patterns" };
+    let i = absolute
+      ? ((indexOrDelta % n) + n) % n
+      : ((this.currentIndex() + indexOrDelta) % n + n) % n;
+    return this.load(slots[i]);
+  }
+
   /** Seed factory sketches once; restore last current sketch. */
   bootstrap() {
     const seeded = localStorage.getItem(SEEDED_KEY);
