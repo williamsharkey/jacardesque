@@ -3941,6 +3941,7 @@ export class JacquardUI {
       "kick-punch", "snare-crisp", "hat-closed", "bass-sub",
       "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
       "string-nylon", "wave-soft", "organ-church",
+      "dx7-ep", "grain-pad", "samp-keys",
     ];
     const mid = Math.ceil(keys.length / 2);
     const leftKeys = keys.slice(0, mid);

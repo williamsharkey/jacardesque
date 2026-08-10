@@ -36,8 +36,17 @@ export class AudioEngine {
     this.context = new AC({ latencyHint: "interactive" });
     this.sampleRate = this.context.sampleRate;
 
-    const workletUrl = new URL("./processor.js", import.meta.url);
-    await this.context.audioWorklet.addModule(workletUrl.href);
+    // Classic worklet scripts share one global scope — load engine cores first.
+    // (DX7 / granular / multi-sample: plain JS attaching globalThis.Jq*)
+    const workletModules = [
+      "./engines/dx7-core.js",
+      "./engines/granular-core.js",
+      "./engines/sampler-core.js",
+      "./processor.js",
+    ];
+    for (const rel of workletModules) {
+      await this.context.audioWorklet.addModule(new URL(rel, import.meta.url).href);
+    }
 
     this.node = new AudioWorkletNode(this.context, "jacquard-processor", {
       numberOfInputs: 0,

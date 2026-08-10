@@ -37,6 +37,9 @@ const DEMO_NOTE = {
   string: "A3",
   wave: "C4",
   organ: "C3",
+  dx7: "E4",
+  granular: "G3",
+  sampler: "C3",
 };
 
 export function instrumentLab() {

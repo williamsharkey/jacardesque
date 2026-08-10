@@ -1,11 +1,11 @@
 // Named instrument catalog — presets over synthesis engines.
-// patch.instrument = engine id 0–10 (what the worklet renders).
+// patch.instrument = engine id 0–13 (what the worklet renders).
 // UI selection uses catalog keys (kick-deep, pad-warm, …).
 
 import catalog from "./instrument-catalog.json" with { type: "json" };
 
 /** Highest engine id the worklet knows (inclusive). */
-export const MAX_ENGINE = 10;
+export const MAX_ENGINE = 13;
 
 /** Engine algorithms (processor switch). */
 export const Instruments = {
@@ -20,11 +20,14 @@ export const Instruments = {
   string: 8,   // Karplus–Strong physical model
   wave: 9,     // classic wavetable morph
   organ: 10,   // additive organ
+  dx7: 11,     // 6-op DX7-style FM (32 algorithms)
+  granular: 12, // grain cloud over shared pad buffer
+  sampler: 13, // multi-sample procedural banks
 };
 
 export const EngineNames = [
   "FM", "Kick", "Snare", "Hat", "Bass", "Pad", "Bell", "Pluck",
-  "String", "Wave", "Organ",
+  "String", "Wave", "Organ", "DX7", "Granular", "Sampler",
 ];
 
 function clampEngine(n) {

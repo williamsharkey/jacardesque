@@ -112,8 +112,8 @@ function pitchScale(note, time) {
     : FastMath.pow2(note.pitchSweep * FmCurve.snap(time / note.pitchDecay));
 }
 
-// Multi-timbre voice: FM lead + procedural kick/snare/hat/bass/pad/bell/pluck.
-// Cleaner than the prototype defaults: lower indices, softer clip, gentle tone filter.
+// Multi-timbre voice: classic engines + DX7 / granular / multi-sample (shared cores).
+// Engines 11–13 use preallocated JqDx7 / JqGranular / JqSampler state (no alloc in render).
 class Voice {
   constructor() {
     this.active = false;
@@ -127,6 +127,10 @@ class Voice {
     this.noise = 0;
     this.filter = 0;
     this.seed = 1;
+    // Lazy per-voice engine state (typed arrays; created once)
+    this.dx7 = null;
+    this.gran = null;
+    this.samp = null;
     // Smoothed stereo gains — absorb pan/level jumps on re-trigger / steal
     this.sGl = null;
     this.sGr = null;
@@ -166,6 +170,26 @@ class Voice {
     this.ksPrev = 0;
     this.seed = (note.startSample * 1103515245 + 12345) >>> 0 || 1;
     this.increment = note.frequency / sampleRate;
+    // Advanced engines — trigger preallocated state only for matching instrument
+    const eng = note.instrument | 0;
+    if (eng === 11 && typeof JqDx7 !== "undefined") {
+      if (!this.dx7) this.dx7 = JqDx7.createState();
+      JqDx7.trigger(this.dx7, note, sampleRate);
+    } else if (eng === 12 && typeof JqGranular !== "undefined") {
+      if (!this.gran) this.gran = JqGranular.createState();
+      JqGranular.trigger(this.gran, note, sampleRate);
+    } else if (eng === 13 && typeof JqSampler !== "undefined") {
+      if (!this.samp) this.samp = JqSampler.createState();
+      JqSampler.trigger(this.samp, {
+        midi: note.midi,
+        frequency: note.frequency,
+        sampleRate,
+        modulatorRatio: note.modulatorRatio,
+        modulationIndex: note.modulationIndex,
+        feedback: note.feedback,
+        modulatorDecay: note.modulatorDecay,
+      });
+    }
     const g = panGains(note);
     this.tGl = g.left;
     this.tGr = g.right;
@@ -213,13 +237,19 @@ class Voice {
       case 8: sample = this.renderKarplus(note, time, env); break;
       case 9: sample = this.renderWave(note, time, env); break;
       case 10: sample = this.renderOrgan(note, time, env); break;
+      case 11: sample = this.renderDx7(note, time, env); break;
+      case 12: sample = this.renderGranular(note, time, env); break;
+      case 13: sample = this.renderSampler(note, time, env); break;
       default: sample = this.renderFm(note, time, env); break;
     }
 
     // Soft one-pole tone control — tames digital grit without dulling the note.
+    // DX7/sampler already tone-shape; skip heavy filter on them.
     const cutoff = inst === 3 ? 0.55
       : inst === 5 || inst === 10 ? 0.12
       : inst === 8 ? 0.22
+      : inst === 11 || inst === 13 ? 0.65
+      : inst === 12 ? 0.18
       : 0.28;
     this.filter += (sample - this.filter) * cutoff;
     return this.filter * note.level;
@@ -415,6 +445,24 @@ class Voice {
     }
     return out * env;
   }
+
+  /** Full 6-op DX7-style FM (shared JqDx7 core — 32 algorithms). */
+  renderDx7(_note, time, env) {
+    if (!this.dx7 || typeof JqDx7 === "undefined") return 0;
+    return JqDx7.render(this.dx7, time, env);
+  }
+
+  /** Granular cloud over shared procedural pad buffer. */
+  renderGranular(_note, time, env) {
+    if (!this.gran || typeof JqGranular === "undefined") return 0;
+    return JqGranular.render(this.gran, time, env);
+  }
+
+  /** Multi-sample playback (6 procedural banks, zone or knob select). */
+  renderSampler(_note, _time, env) {
+    if (!this.samp || typeof JqSampler === "undefined") return 0;
+    return JqSampler.render(this.samp, env);
+  }
 }
 
 class VoicePool {
@@ -466,7 +514,7 @@ class VoicePool {
       const target = panGains(note);
       voice.tGl = target.left;
       voice.tGr = target.right;
-      const ch = Math.min(32, Math.max(1, note.channel | 1)) - 1;
+      const ch = Math.min(48, Math.max(1, note.channel | 1)) - 1;
       for (let frame = 0; frame < frameCount; frame++) {
         const time = (bufferStart + frame - note.startSample) * dt;
         if (time < 0) continue;
@@ -1177,6 +1225,12 @@ class JacquardProcessor extends AudioWorkletProcessor {
     super();
     const maxVoices = options.processorOptions?.maxVoices ?? 24;
     this.sampleRate = sampleRate;
+    // Shared engine tables / banks once per worklet (low mem: ~200KB total)
+    try {
+      if (typeof JqDx7 !== "undefined") JqDx7.init();
+      if (typeof JqGranular !== "undefined") JqGranular.init(sampleRate);
+      if (typeof JqSampler !== "undefined") JqSampler.init(sampleRate);
+    } catch (_) { /* engines optional if modules failed to load */ }
     this.pool = new VoicePool(maxVoices);
     this.reverb = new ReverbBus(sampleRate);
     this.delay = new DelayBus(sampleRate);
@@ -1229,7 +1283,8 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this._delayIn = new Float32Array(frameCount);
     this._wetL = new Float32Array(frameCount);
     this._wetR = new Float32Array(frameCount);
-    this._chMono = Array.from({ length: 32 }, () => new Float32Array(frameCount));
+    // Match PatchBank.Channels (main thread) for path-sends
+    this._chMono = Array.from({ length: 48 }, () => new Float32Array(frameCount));
   }
 
   onMessage(msg) {

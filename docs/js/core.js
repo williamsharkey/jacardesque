@@ -193,8 +193,8 @@ export function clonePatch(p) {
 }
 
 export const PatchBank = {
-  /** Raised so Instrument lab can host the full 30-preset catalog. */
-  Channels: 40,
+  /** Raised so Instrument lab can host the full catalog (DX7/granular/sampler too). */
+  Channels: 48,
   clamp(ch) {
     return Math.min(this.Channels, Math.max(1, ch | 0));
   },
@@ -1801,7 +1801,10 @@ function writeLock(tile) {
 
 function writePatch(p) {
   const inst = p.instrument | 0;
-  const names = ["fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck"];
+  const names = [
+    "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
+    "string", "wave", "organ", "dx7", "granular", "sampler",
+  ];
   return "instrument=" + (names[inst] || "fm") +
     " level=" + F(p.level) +
     " pan=" + F(p.pan) +
@@ -2131,7 +2134,10 @@ function readPatch(patch, tokens, from) {
   for (let i = from; i < tokens.length; i++) {
     const [key, text] = split(tokens[i]);
     if (key === "instrument") {
-      const names = ["fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck"];
+      const names = [
+        "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
+        "string", "wave", "organ", "dx7", "granular", "sampler",
+      ];
       const idx = names.indexOf(String(text).toLowerCase());
       patch.instrument = idx >= 0 ? idx : (readInt(text) || 0);
       continue;

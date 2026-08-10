@@ -17,7 +17,7 @@ import {
 import { resolveLaneChannel, ensureInstruments } from "./inst-model.js";
 
 const LOOKAHEAD = 0.12;
-const MAX_VOICES = 40;
+const MAX_VOICES = 48;
 const AUTOSAVE_MS = 400;
 
 class App {
