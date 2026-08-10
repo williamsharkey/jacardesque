@@ -129,10 +129,11 @@ export function patternOpOf(mod) {
 
 /**
  * Trigger pad on free ground (not on a lane cell).
- * kind: "on" | "off" | "param" | "chan" | "pat+" | "pat-"
+ * kind: "on" | "off" | "param" | "chan" | "pat+" | "pat-" | "patgo"
  *   on/off/param → FX insert
  *   chan → instrument patch param for a channel
  *   pat+/pat- → pattern bank step (adjacency fire)
+ *   patgo → jump to targetPattern id (or absolute index in value)
  * Fires when orthogonally adjacent to a playhead-lit step cell.
  */
 export function createFxTrigger({
@@ -143,11 +144,12 @@ export function createFxTrigger({
   channel = 0,
   paramKey = null,
   value = 0,
+  targetPattern = null,
   id = null,
 }) {
-  const allowed = ["on", "off", "param", "chan", "pat+", "pat-"];
+  const allowed = ["on", "off", "param", "chan", "pat+", "pat-", "patgo"];
   const k = allowed.includes(kind) ? kind : "on";
-  const isPat = k === "pat+" || k === "pat-";
+  const isPat = k === "pat+" || k === "pat-" || k === "patgo";
   const isChan = k === "chan";
   const isValue = k === "param" || isChan;
   return {
@@ -159,7 +161,9 @@ export function createFxTrigger({
     channel: isChan ? Math.max(1, channel | 0) : 0,
     paramKey: isValue ? String(paramKey || (isChan ? "level" : "mix")) : null,
     // Preserve 0 / negatives; only fall back when non-finite
-    value: isValue ? (Number.isFinite(+value) ? +value : 0) : 0,
+    value: isValue ? (Number.isFinite(+value) ? +value : 0)
+      : (k === "patgo" && Number.isFinite(+value) ? +value : 0),
+    targetPattern: k === "patgo" && targetPattern ? String(targetPattern) : null,
   };
 }
 
@@ -176,7 +180,7 @@ export function chanLatchKey(channel, paramKey) {
 /** Short owner label for chip face, e.g. DLY, PL, PAT. */
 export function triggerOwnerLabel(score, trig) {
   ensureFxLists(score);
-  if (trig.kind === "pat+" || trig.kind === "pat-") return "PAT";
+  if (trig.kind === "pat+" || trig.kind === "pat-" || trig.kind === "patgo") return "PAT";
   if (trig.kind === "chan") {
     for (const lane of score.lanes || []) {
       const ch = lane.channel;
@@ -197,6 +201,7 @@ export function triggerActionLabel(trig) {
   if (trig.kind === "off") return "OFF";
   if (trig.kind === "pat+") return "P+";
   if (trig.kind === "pat-") return "P−";
+  if (trig.kind === "patgo") return "P→";
   if (trig.kind === "param" || trig.kind === "chan") {
     // Inline compact format (formatAutoShort is defined later in module)
     const v = trig.value;
@@ -353,6 +358,10 @@ export function formatAutoLong(score, trig) {
   if (trig.kind === "pat-") {
     return "Pattern − · adjacent lit step → previous sketch in bank";
   }
+  if (trig.kind === "patgo") {
+    return "Pattern jump → " + (trig.targetPattern || ("#" + ((trig.value | 0) + 1))) +
+      " · adjacent lit step → load that sketch";
+  }
   if (trig.kind === "chan") {
     const pDef = autoParamDef(score, trig);
     const label = pDef?.label || trig.paramKey;
@@ -427,11 +436,13 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
   const cells = playing ? playheadCells(runners) : [];
   const activeTrigIds = new Set();
   const adjTrigIds = new Set();
+  /** Newly fired (non-pattern) triggers this call — for event logs / sim. */
+  const fires = [];
 
   if (!playing) {
     if (latch) latch.clear();
     if (fired) fired.clear();
-    return { cells, activeTrigIds, adjTrigIds };
+    return { cells, activeTrigIds, adjTrigIds, fires };
   }
 
   for (const trig of score.fxTriggers) {
@@ -451,7 +462,7 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
     if (fired) fired.set(trig.id, fireKey);
 
     // Pattern bank triggers are handled in collectPatternTriggers
-    if (trig.kind === "pat+" || trig.kind === "pat-") continue;
+    if (trig.kind === "pat+" || trig.kind === "pat-" || trig.kind === "patgo") continue;
 
     if (trig.kind === "chan") {
       if (!patches || !trig.paramKey) continue;
@@ -462,6 +473,13 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
       // values (esp. mix) feel "stuck".
       ParamTargets.set(PatchBank.get(patches, trig.channel | 0), t, trig.value);
       if (latch) latch.set(chanLatchKey(trig.channel, trig.paramKey), trig.value);
+      fires.push({
+        kind: "chan",
+        id: trig.id,
+        channel: trig.channel | 0,
+        paramKey: trig.paramKey,
+        value: trig.value,
+      });
       continue;
     }
 
@@ -470,16 +488,26 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
 
     if (trig.kind === "on") {
       mod.on = true;
+      fires.push({ kind: "on", id: trig.id, targetFxId: mod.id, fxType: mod.type });
     } else if (trig.kind === "off") {
       mod.on = false;
+      fires.push({ kind: "off", id: trig.id, targetFxId: mod.id, fxType: mod.type });
     } else if (trig.kind === "param" && trig.paramKey) {
       const v = Number.isFinite(+trig.value) ? +trig.value : 0;
       mod.params[trig.paramKey] = v;
       if (latch) latch.set(fxLatchKey(mod.id, trig.paramKey), v);
+      fires.push({
+        kind: "param",
+        id: trig.id,
+        targetFxId: mod.id,
+        fxType: mod.type,
+        paramKey: trig.paramKey,
+        value: v,
+      });
     }
   }
 
-  return { cells, activeTrigIds, adjTrigIds };
+  return { cells, activeTrigIds, adjTrigIds, fires };
 }
 
 /**
@@ -585,9 +613,9 @@ export function collectPatternTriggers(score, runners, lastFired) {
     });
   }
 
-  // New: pat+ / pat- adjacency triggers (dragged from transport ‹ ›)
+  // pat+ / pat- / patgo adjacency triggers
   for (const trig of score.fxTriggers) {
-    if (trig.kind !== "pat+" && trig.kind !== "pat-") continue;
+    if (trig.kind !== "pat+" && trig.kind !== "pat-" && trig.kind !== "patgo") continue;
     if (!triggerAdjacentToPlayhead(trig, cells)) {
       if (lastFired) lastFired.delete(trig.id);
       continue;
@@ -595,12 +623,22 @@ export function collectPatternTriggers(score, runners, lastFired) {
     const fireKey = cells.map((c) => c.x + "," + c.y).sort().join("|");
     if (lastFired && lastFired.get(trig.id) === fireKey) continue;
     if (lastFired) lastFired.set(trig.id, fireKey);
-    triggers.push({
-      op: trig.kind === "pat+" ? "inc" : "dec",
-      n: 0,
-      id: trig.id,
-      key: fireKey,
-    });
+    if (trig.kind === "patgo") {
+      triggers.push({
+        op: "jumpId",
+        n: trig.value | 0,
+        targetPattern: trig.targetPattern || null,
+        id: trig.id,
+        key: fireKey,
+      });
+    } else {
+      triggers.push({
+        op: trig.kind === "pat+" ? "inc" : "dec",
+        n: 0,
+        id: trig.id,
+        key: fireKey,
+      });
+    }
   }
   return triggers;
 }

@@ -1799,6 +1799,9 @@ function writeFxWorld(lines, score) {
         " value=" + F(t.value);
     } else if (t.kind === "pat+" || t.kind === "pat-") {
       // no extra fields
+    } else if (t.kind === "patgo") {
+      if (t.targetPattern) s += " pattern=" + t.targetPattern;
+      if (t.value) s += " value=" + F(t.value);
     } else {
       if (t.targetFxId) s += " target=" + t.targetFxId;
       if (t.kind === "param") {
@@ -1858,6 +1861,7 @@ function readFxTrig(score, tokens, number) {
   let channel = 0;
   let paramKey = "mix";
   let value = 0;
+  let targetPattern = null;
   let id = null;
   for (let i = 3; i < tokens.length; i++) {
     const [k, v] = split(tokens[i]);
@@ -1866,16 +1870,19 @@ function readFxTrig(score, tokens, number) {
     else if (k === "channel") channel = readInt(v);
     else if (k === "param") paramKey = v;
     else if (k === "value") value = readFloat(v);
+    else if (k === "pattern") targetPattern = v;
     else if (k === "id") id = v;
   }
   if (!score.fxTriggers) score.fxTriggers = [];
+  const isPat = kind === "pat+" || kind === "pat-" || kind === "patgo";
   score.fxTriggers.push({
     id: id || ("tr-" + score.fxTriggers.length),
     x, y, kind,
-    targetFxId: kind === "chan" ? null : targetFxId,
+    targetFxId: (kind === "chan" || isPat) ? null : targetFxId,
     channel: kind === "chan" ? channel : 0,
     paramKey: (kind === "param" || kind === "chan") ? paramKey : null,
-    value: (kind === "param" || kind === "chan") ? value : 0,
+    value: (kind === "param" || kind === "chan" || kind === "patgo") ? value : 0,
+    targetPattern: kind === "patgo" ? (targetPattern || null) : null,
   });
 }
 
@@ -2170,6 +2177,21 @@ export class Runner {
   }
 }
 
+/**
+ * Deterministic PRNG (mulberry32). Returns () => [0,1).
+ * Used by ProbGateTile and the offline sim / event-log harness.
+ */
+export function createSeededRandom(seed) {
+  let s = (Number(seed) >>> 0) || 1;
+  return function seededRandom() {
+    s |= 0;
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export class Sequencer {
   constructor() {
     this.project = null;
@@ -2179,6 +2201,18 @@ export class Sequencer {
     this._slice = [];
     this._working = PatchBank.create();
     this._random = Math.random;
+    this._seed = null;
+  }
+
+  /** Install a deterministic RNG for gates / sim. Null → Math.random. */
+  setRandomSeed(seed) {
+    if (seed == null) {
+      this._seed = null;
+      this._random = Math.random;
+      return;
+    }
+    this._seed = seed;
+    this._random = createSeededRandom(seed);
   }
 
   get isPlaying() {

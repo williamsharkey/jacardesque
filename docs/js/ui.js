@@ -1673,7 +1673,7 @@ export class ScoreView {
     if (trig.kind === "on") fill = firing ? "#86efac" : "#4ade80";
     else if (trig.kind === "off") fill = firing ? "#fca5a5" : "#f87171";
     else if (trig.kind === "chan") fill = firing ? "#a5f3fc" : "#22d3ee";
-    else if (trig.kind === "pat+" || trig.kind === "pat-") {
+    else if (trig.kind === "pat+" || trig.kind === "pat-" || trig.kind === "patgo") {
       fill = firing ? "#c4b5fd" : "#a78bfa";
     } else fill = firing ? "#fde68a" : "#fbbf24";
 
@@ -3291,7 +3291,8 @@ export class JacquardUI {
         : trig.kind === "chan" ? "Instrument param"
           : trig.kind === "pat+" ? "Pattern +"
             : trig.kind === "pat-" ? "Pattern −"
-              : "FX param";
+              : trig.kind === "patgo" ? "Pattern jump"
+                : "FX param";
     panel.append(el("div", "panel-title", title));
     const body = el("div", "panel-body");
     panel.append(body);
@@ -3307,6 +3308,11 @@ export class JacquardUI {
       body.append(el("div", "caption",
         "Create these by dragging transport ‹ / › onto the grid. " +
         "Click ‹ › (no drag) still steps the sketch bank immediately."));
+    }
+    if (trig.kind === "patgo") {
+      body.append(el("div", "caption",
+        "Jumps to sketch id “" + (trig.targetPattern || "?") + "” when adjacent step lights. " +
+        "Used by multi-pattern suites (e.g. Air Dagger A→B→C→D→A)."));
     }
 
     if (trig.kind === "param" || trig.kind === "chan") {

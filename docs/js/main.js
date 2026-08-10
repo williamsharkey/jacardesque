@@ -151,8 +151,13 @@ class App {
     }
   }
 
-  /** Pattern navigation with optional seamless clock (default true when playing). */
-  switchPattern(op, n = 0) {
+  /**
+   * Pattern navigation with optional seamless clock (default true when playing).
+   * @param {string} op  inc | dec | jump | jumpId
+   * @param {number} n   absolute index when op=jump
+   * @param {string|null} targetPattern  sketch id when op=jumpId
+   */
+  switchPattern(op, n = 0, targetPattern = null) {
     if (this._switching) return;
     this._switching = true;
     try {
@@ -161,6 +166,8 @@ class App {
       if (op === "inc") result = this.store.gotoPattern(1);
       else if (op === "dec") result = this.store.gotoPattern(-1);
       else if (op === "jump") result = this.store.gotoPattern(n, { absolute: true });
+      else if (op === "jumpId" && targetPattern) result = this.store.load(targetPattern);
+      else if (op === "jumpId") result = this.store.gotoPattern(n, { absolute: true });
       else result = this.store.gotoPattern(0);
 
       const keepClock = this.sequencer.isPlaying;
@@ -250,7 +257,7 @@ class App {
     }
 
     for (const t of triggers) {
-      this.switchPattern(t.op, t.n | 0);
+      this.switchPattern(t.op, t.n | 0, t.targetPattern || null);
       // Only one switch per tick (avoid multi-fire cascades).
       break;
     }

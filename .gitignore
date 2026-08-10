@@ -22,3 +22,4 @@ Desktop.ini
 /*.tgz
 /*_DoNotShip
 node_modules/
+test-output/

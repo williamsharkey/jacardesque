@@ -113,9 +113,20 @@ Full walkthrough: **[docs/MANUAL.md](docs/MANUAL.md)**.
 | **Branch river** | JUMP/JDST, locks, delay on branch |
 | **Pattern carousel** | Adjacency P+/P− chips + reverb |
 | **Tape loop garden** | Freeform path, dual delays, channel level chips |
+| **Air Dagger · A–D** | Four-pattern polyrhythmic suite (3/5/7 cycles), dense automation, A→B→C→D→A jumps |
 
 ### Haiku set
 Ten additional musical pieces (Rain on tin, …) with sticky haiku notes.
+
+### Offline event-log test (no audio)
+
+```bash
+npm run test:air
+# or with options:
+node docs/js/test-air-dagger.mjs --seed 42 --seconds 40 --format jsonl --out /tmp/ad.jsonl
+```
+
+Runs the real sequencer + FX trigger engine offline with a deterministic PRNG seed. Writes tracker-style JSONL (step, sample, type, values) for verification — typically tens of ms for 40 s of song time.
 
 ---
 

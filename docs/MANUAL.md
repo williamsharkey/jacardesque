@@ -146,8 +146,17 @@ Always on screen:
 | **Branch river** | JUMP/JDST, locks, delay on branch |
 | **Pattern carousel** | Adjacency P+/P− chips + reverb |
 | **Tape loop garden** | Freeform path, dual delays, channel level chips |
+| **Air Dagger · A–D** | Polyrhythmic dance suite: lengths 5/7/15/16/21, chords, GPRB, locks, FX/instrument chips, form-lane **patgo** A→B→C→D→A |
 
 Plus ten musical **haiku** sketches (Rain on tin, …) in the same bank.
+
+### Offline sim / event log
+
+```bash
+npm run test:air -- --seed 1 --seconds 40
+```
+
+Uses the same `Sequencer.schedule` + adjacency triggers as the browser, with a seeded PRNG for probability gates. No Web Audio — emits JSONL lines (`step`, `sample`, `type=note|trig|pattern`, …) for fast regression checks.
 
 ---
 

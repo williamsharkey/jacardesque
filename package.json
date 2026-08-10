@@ -5,8 +5,10 @@
   "description": "Web Audio port of keijiro/Jacquard — tests and local tooling",
   "scripts": {
     "test": "node docs/js/test-core.mjs",
+    "test:air": "node docs/js/test-air-dagger.mjs",
+    "test:air:log": "node docs/js/test-air-dagger.mjs --seed 1 --seconds 40 --format jsonl",
     "test:browser": "node docs/js/browser-smoke.mjs",
-    "test:all": "node docs/js/test-core.mjs && node docs/js/browser-smoke.mjs",
+    "test:all": "node docs/js/test-core.mjs && node docs/js/test-air-dagger.mjs --quiet && node docs/js/browser-smoke.mjs",
     "serve": "python3 -m http.server 8080 --directory docs"
   },
   "devDependencies": {
