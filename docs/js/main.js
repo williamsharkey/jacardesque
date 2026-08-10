@@ -11,6 +11,8 @@ import {
   collectPatternTriggers,
   playheadCells,
   isAdjacent,
+  fxLatchKey,
+  chanLatchKey,
 } from "./fx-model.js";
 
 const LOOKAHEAD = 0.12;
@@ -104,6 +106,17 @@ class App {
       this.message = this.store.save(this.project);
       this.ui?.onSketchMetaChanged?.();
     }, AUTOSAVE_MS);
+  }
+
+  /** Drop sample-and-hold so a manual scrub/edit wins over the last chip fire. */
+  clearFxLatch(fxId, paramKey) {
+    if (fxId == null || paramKey == null) return;
+    this._fxAutoLatch.delete(fxLatchKey(fxId, paramKey));
+  }
+
+  clearChanLatch(channel, paramKey) {
+    if (paramKey == null) return;
+    this._fxAutoLatch.delete(chanLatchKey(channel, paramKey));
   }
 
   /**

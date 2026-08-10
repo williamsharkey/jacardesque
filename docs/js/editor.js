@@ -606,9 +606,10 @@ export class ScoreEditor {
         const span = (def?.max ?? 1) - (def?.min ?? 0);
         const step = Math.abs(delta) >= 12 ? span * 0.1 : span * 0.02;
         const s = delta > 0 ? step : -step;
-        let v = (trig.value || 0) + s;
+        let v = (Number.isFinite(trig.value) ? trig.value : 0) + s;
         v = Math.min(def?.max ?? 1, Math.max(def?.min ?? 0, v));
         trig.value = v;
+        this.onNudgeParam?.(trig);
         this.touch();
         this.onChanged?.();
       }
@@ -622,7 +623,9 @@ export class ScoreEditor {
         const span = p.max - p.min;
         const step = Math.abs(delta) >= 12 ? span * 0.1 : span * 0.05;
         const s = delta > 0 ? step : -step;
-        mod.params[p.key] = Math.min(p.max, Math.max(p.min, (mod.params[p.key] ?? p.def) + s));
+        const nv = Math.min(p.max, Math.max(p.min, (mod.params[p.key] ?? p.def) + s));
+        mod.params[p.key] = nv;
+        this.onNudgeFxParam?.(mod.id, p.key, nv);
         this.touch();
         this.onChanged?.();
       }

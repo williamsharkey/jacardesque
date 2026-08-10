@@ -158,8 +158,19 @@ export function createFxTrigger({
     targetFxId: (isChan || isPat) ? null : targetFxId,
     channel: isChan ? Math.max(1, channel | 0) : 0,
     paramKey: isValue ? String(paramKey || (isChan ? "level" : "mix")) : null,
-    value: isValue ? +value || 0 : 0,
+    // Preserve 0 / negatives; only fall back when non-finite
+    value: isValue ? (Number.isFinite(+value) ? +value : 0) : 0,
   };
+}
+
+/** Latch map key for an FX module param (sample-and-hold). */
+export function fxLatchKey(fxId, paramKey) {
+  return String(fxId) + "\0" + String(paramKey);
+}
+
+/** Latch map key for a channel instrument param. */
+export function chanLatchKey(channel, paramKey) {
+  return "ch\0" + (channel | 0) + "\0" + String(paramKey);
 }
 
 /** Short owner label for chip face, e.g. DLY, PL, PAT. */
@@ -446,8 +457,11 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
       if (!patches || !trig.paramKey) continue;
       const t = ParamTargets.parse(trig.paramKey);
       if (t < 0) continue;
+      // Write once on fire — sample-and-hold lives in the patch / latch.
+      // Do NOT re-apply every frame: that fights manual scrub and makes
+      // values (esp. mix) feel "stuck".
       ParamTargets.set(PatchBank.get(patches, trig.channel | 0), t, trig.value);
-      if (latch) latch.set("ch\0" + (trig.channel | 0) + "\0" + trig.paramKey, trig.value);
+      if (latch) latch.set(chanLatchKey(trig.channel, trig.paramKey), trig.value);
       continue;
     }
 
@@ -459,28 +473,9 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
     } else if (trig.kind === "off") {
       mod.on = false;
     } else if (trig.kind === "param" && trig.paramKey) {
-      mod.params[trig.paramKey] = trig.value;
-      if (latch) latch.set(mod.id + "\0" + trig.paramKey, trig.value);
-    }
-  }
-
-  // Re-apply latched params every frame (so they stick)
-  if (latch) {
-    for (const [key, value] of latch) {
-      if (key.startsWith("ch\0")) {
-        if (!patches) continue;
-        const parts = key.split("\0");
-        const ch = +parts[1];
-        const paramKey = parts[2];
-        const t = ParamTargets.parse(paramKey);
-        if (t < 0) continue;
-        ParamTargets.set(PatchBank.get(patches, ch), t, value);
-        continue;
-      }
-      const sep = key.indexOf("\0");
-      if (sep < 0) continue;
-      const mod = score.fxModules.find((m) => m.id === key.slice(0, sep));
-      if (mod) mod.params[key.slice(sep + 1)] = value;
+      const v = Number.isFinite(+trig.value) ? +trig.value : 0;
+      mod.params[trig.paramKey] = v;
+      if (latch) latch.set(fxLatchKey(mod.id, trig.paramKey), v);
     }
   }
 
@@ -509,20 +504,18 @@ export function computeFxLiveState(score, runners, playing, latch = null, fired 
     if (mod.on && !isPatternModule(mod)) receivingFx.add(mod.id);
   }
 
+  // Latch records last-fired automation for UI ticks only.
+  // Audio/UI values come from mod.params / patches (written on fire or scrub).
+  // Never overlay latch on top of mod.params — that made mix feel "stuck"
+  // when the user scrubbed after a chip had fired.
   if (playing && latch) {
-    for (const [key, value] of latch) {
+    for (const key of latch.keys()) {
       if (key.startsWith("ch\0")) {
         const parts = key.split("\0");
         chanOnParam.add(parts[1] + ":" + parts[2]);
         continue;
       }
-      const sep = key.indexOf("\0");
-      if (sep < 0) continue;
-      const p = liveParams.get(key.slice(0, sep));
-      if (p) {
-        p[key.slice(sep + 1)] = value;
-        autoOnParam.add(key);
-      }
+      autoOnParam.add(key);
     }
   }
 

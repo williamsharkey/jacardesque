@@ -157,6 +157,8 @@ export function createValueBar(range, get, set, settled, options = {}) {
   let lastClick = 0;
   let editing = false;
   let ghost = null;
+  /** Frozen value at drag-out arm — must not re-read get() (latch can race). */
+  let dragOutValue = 0;
 
   function paintTicks() {
     ticks.innerHTML = "";
@@ -208,7 +210,9 @@ export function createValueBar(range, get, set, settled, options = {}) {
     if (options.onDragOut && Math.abs(dy) > Math.abs(dx) + 10 && Math.abs(dy) > 14) {
       draggingOut = true;
       scrubbed = false;
-      ghost = el("div", "dock-note-ghost", formatRange(range, get()));
+      dragOutValue = get();
+      if (!Number.isFinite(dragOutValue)) dragOutValue = 0;
+      ghost = el("div", "dock-note-ghost", formatRange(range, dragOutValue));
       document.body.append(ghost);
       ghost.style.left = e.clientX + 8 + "px";
       ghost.style.top = e.clientY + 8 + "px";
@@ -304,7 +308,8 @@ export function createValueBar(range, get, set, settled, options = {}) {
     }
     if (draggingOut) {
       draggingOut = false;
-      options.onDragOut?.(get(), e.clientX, e.clientY);
+      // Use frozen scrub value — not get(), which may have been latched over mid-drag
+      options.onDragOut?.(dragOutValue, e.clientX, e.clientY);
       return;
     }
     // Settled only after a scrub
@@ -414,6 +419,8 @@ export class ScoreView {
     this.onPathSelect = null;
     /** ({ kind, fxId, paramKey?, value?, point }) => void */
     this.onTriggerPlaced = null;
+    /** (fxId, paramKey, value) — clear automation latch so manual scrub wins. */
+    this.onFxParamScrub = null;
     /** (commit?: boolean) => void */
     this.onFxParamChanged = null;
     /** (point) => boolean */
@@ -630,7 +637,10 @@ export class ScoreView {
         let value = fxHit.hitValue;
         if (mod && p) {
           value = Math.min(p.max, Math.max(p.min, fxHit.hitValue));
+          if (!Number.isFinite(value)) value = p.def;
           mod.params[fxHit.paramKey] = value;
+          // Manual click/scrub beats last automation fire
+          this.onFxParamScrub?.(fxHit.fxId, fxHit.paramKey, value);
         }
         this._sliderDrag = {
           fxId: fxHit.fxId,
@@ -638,6 +648,7 @@ export class ScoreView {
           bar: fxHit.bar,
           origin: pos,
           value,
+          frozenValue: null,
           scrubbing: true,
           draggingOut: false,
           insideFx: true,
@@ -851,6 +862,14 @@ export class ScoreView {
         const dy = Math.abs(pos.y - d.origin.y);
         const dx = Math.abs(pos.x - d.origin.x);
         if (!inside || (dy > dx + 12 && dy > 16)) {
+          if (!d.draggingOut) {
+            // Freeze value at the moment drag-out arms — never re-read mod.params
+            // later (automation latch used to overwrite mid-drag).
+            d.frozenValue = Number.isFinite(d.value) ? d.value : 0;
+            d.value = d.frozenValue;
+            if (mod) mod.params[d.paramKey] = d.frozenValue;
+            this.onFxParamScrub?.(d.fxId, d.paramKey, d.frozenValue);
+          }
           d.draggingOut = true;
           d.scrubbing = false;
         }
@@ -865,6 +884,8 @@ export class ScoreView {
           const v = p.min + t * (p.max - p.min);
           mod.params[d.paramKey] = v;
           d.value = v;
+          // Clear automation hold so scrub wins over last chip value
+          this.onFxParamScrub?.(d.fxId, d.paramKey, v);
           // Lightweight repaint only — avoid full commit/resync mid-scrub
           this.paint();
           return;
@@ -975,8 +996,12 @@ export class ScoreView {
       const d = this._sliderDrag;
       this._sliderDrag = null;
       if (d.draggingOut && !d.insideFx && d.point) {
+        const val = Number.isFinite(d.frozenValue)
+          ? d.frozenValue
+          : (Number.isFinite(d.value) ? d.value : 0);
         const mod = this.score.fxModules.find((m) => m.id === d.fxId);
-        const val = mod?.params?.[d.paramKey] ?? d.value;
+        if (mod) mod.params[d.paramKey] = val;
+        this.onFxParamScrub?.(d.fxId, d.paramKey, val);
         this.onTriggerPlaced?.({
           kind: "param",
           fxId: d.fxId,
@@ -985,6 +1010,7 @@ export class ScoreView {
           point: d.point,
         });
       } else if (d.scrubbing) {
+        this.onFxParamScrub?.(d.fxId, d.paramKey, d.value);
         this.onFxParamChanged?.(true);
       }
       this.paint();
@@ -1861,7 +1887,10 @@ export class ScoreView {
     if (this._sliderDrag?.draggingOut && this._sliderDrag.point && !this._sliderDrag.insideFx) {
       const pt = this._sliderDrag.point;
       const o = Style.cellCenter(pt);
-      const short = formatAutoShort(this._sliderDrag.paramKey, this._sliderDrag.value);
+      const ghostVal = Number.isFinite(this._sliderDrag.frozenValue)
+        ? this._sliderDrag.frozenValue
+        : this._sliderDrag.value;
+      const short = formatAutoShort(this._sliderDrag.paramKey, ghostVal);
       ctx.globalAlpha = 0.9;
       ctx.fillStyle = "#fbbf24";
       roundRect(ctx, o.x - 14, o.y - 8, 28, 16, 4);
@@ -2720,6 +2749,13 @@ export class JacquardUI {
         point,
       });
     };
+    this.view.onFxParamScrub = (fxId, paramKey, value) => {
+      this.app.clearFxLatch?.(fxId, paramKey);
+      const mod = this.editor.score.fxModules.find((m) => m.id === fxId);
+      if (mod && paramKey && Number.isFinite(value)) {
+        mod.params[paramKey] = value;
+      }
+    };
     this.view.onFxParamChanged = (commit) => {
       if (commit) this.editor.commit();
       else {
@@ -2759,6 +2795,29 @@ export class JacquardUI {
     this.editor.getCursor = () => this.view.cursor;
     this.editor.setCursor = (p) => this.view.setCursor(p);
     this.editor.onChanged = () => this.onChanged();
+    this.editor.onNudgeFxParam = (fxId, paramKey, value) => {
+      this.app.clearFxLatch?.(fxId, paramKey);
+      const mod = this.editor.score.fxModules.find((m) => m.id === fxId);
+      if (mod && paramKey && Number.isFinite(value)) mod.params[paramKey] = value;
+    };
+    this.editor.onNudgeParam = (trig) => {
+      if (!trig) return;
+      if (trig.kind === "param" && trig.targetFxId && trig.paramKey) {
+        const m = this.editor.score.fxModules.find((x) => x.id === trig.targetFxId);
+        if (m) m.params[trig.paramKey] = trig.value;
+        this.app.clearFxLatch?.(trig.targetFxId, trig.paramKey);
+      } else if (trig.kind === "chan" && trig.paramKey) {
+        const t = ParamTargets.parse(trig.paramKey);
+        if (t >= 0) {
+          ParamTargets.set(
+            PatchBank.get(this.editor.project.patches, trig.channel | 0),
+            t,
+            trig.value,
+          );
+        }
+        this.app.clearChanLatch?.(trig.channel, trig.paramKey);
+      }
+    };
     this.editor.onTouched = () => {
       this.view.paint();
       this.app.scheduleSave();
@@ -3266,7 +3325,24 @@ export class JacquardUI {
         range,
         () => trig.value,
         (v) => {
-          trig.value = v;
+          const nv = Number.isFinite(v) ? v : 0;
+          trig.value = nv;
+          // Keep pedal/patch in sync when editing a chip; clear stale latch
+          if (trig.kind === "param" && trig.targetFxId && trig.paramKey) {
+            const m = score.fxModules.find((x) => x.id === trig.targetFxId);
+            if (m) m.params[trig.paramKey] = nv;
+            this.app.clearFxLatch?.(trig.targetFxId, trig.paramKey);
+          } else if (trig.kind === "chan" && trig.paramKey) {
+            const t = ParamTargets.parse(trig.paramKey);
+            if (t >= 0) {
+              ParamTargets.set(
+                PatchBank.get(this.editor.project.patches, trig.channel | 0),
+                t,
+                nv,
+              );
+            }
+            this.app.clearChanLatch?.(trig.channel, trig.paramKey);
+          }
           this.editor.touch();
           this.view.paint();
         },
@@ -3325,6 +3401,7 @@ export class JacquardUI {
         () => ParamTargets.get(patch, target),
         (v) => {
           ParamTargets.set(patch, target, v);
+          this.app.clearChanLatch?.(channel, key);
           this.app.scheduleSave();
         },
         () => this.editor.preview(60, channel),
@@ -3341,11 +3418,14 @@ export class JacquardUI {
           onDragOut: (value, cx, cy) => {
             const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
             if (!this.editor.isValidTriggerCell(point)) return;
+            const v = Number.isFinite(value) ? value : 0;
+            ParamTargets.set(patch, target, v);
+            this.app.clearChanLatch?.(channel, key);
             this.editor.placeTrigger({
               kind: "chan",
               channel,
               paramKey: key,
-              value,
+              value: v,
               point,
             });
             this.canvas.focus();
@@ -3454,7 +3534,9 @@ export class JacquardUI {
         range,
         () => mod.params[p.key] ?? p.def,
         (v) => {
-          mod.params[p.key] = p.key === "n" ? Math.round(v) : v;
+          const nv = p.key === "n" ? Math.round(v) : v;
+          mod.params[p.key] = nv;
+          this.app.clearFxLatch?.(mod.id, p.key);
           this.app.scheduleSave();
           this.view.paint();
         },
