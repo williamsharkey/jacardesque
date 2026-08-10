@@ -2853,7 +2853,8 @@ function drawNote(ctx, tile, r) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const cx = r.x + r.w / 2;
-  const cy = r.y + r.h / 2 - (tile.hasDefaultLength ? 0 : 4);
+  // Leave room under the name for the duration bar
+  const cy = r.y + r.h / 2 - 3;
   ctx.font = "600 15px system-ui,sans-serif";
   if (sharp) {
     ctx.fillText(letter, cx - 5, cy);
@@ -2864,11 +2865,21 @@ function drawNote(ctx, tile, r) {
   } else {
     ctx.fillText(letter + octave, cx, cy);
   }
-  if (!tile.hasDefaultLength) {
-    ctx.font = "500 9px system-ui,sans-serif";
-    ctx.fillStyle = Style.Marker;
-    ctx.fillText(String(tile.length), cx, r.y + r.h - 8);
-  }
+  // Duration: thin white bar under the name — width = gate length (1 step = full bar)
+  const padX = 4;
+  const barH = 3;
+  const maxW = Math.max(4, r.w - padX * 2);
+  const frac = Math.min(1, Math.max(0.04, +tile.length || 0));
+  const barW = Math.max(2, Math.round(maxW * frac));
+  const barX = r.x + padX;
+  const barY = r.y + r.h - padX - barH;
+  // Track (dim) so short notes still read as “not full”
+  ctx.fillStyle = withAlpha("#f5f5f4", 0.18);
+  roundRect(ctx, barX, barY, maxW, barH, 1);
+  ctx.fill();
+  ctx.fillStyle = "#f5f5f4";
+  roundRect(ctx, barX, barY, barW, barH, 1);
+  ctx.fill();
 }
 
 function drawCycle(ctx, gate, r) {
