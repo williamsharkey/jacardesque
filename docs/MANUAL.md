@@ -47,7 +47,10 @@ Release on an item to place it. Click without leaving the cell to dismiss.
 ### Lane cells
 
 Click-drag a free step on a lane for the **tile place menu**: NOTE / GATE / LOCK / FLOW.  
-Prefer notes from the **bottom keyboard** (drag a key onto a step).
+Prefer notes from the **bottom keyboard**:
+- Drag a key onto a **lane step** → place/replace note there.
+- Drag onto **empty ground** → create a **length-1** lane with that note.
+- Drag onto a cell **N / E / S / W** of an existing lane end (or onto its term/head marker) → **lengthen** that lane by one step and place the note.
 
 ---
 

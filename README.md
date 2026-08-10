@@ -77,7 +77,7 @@ Click empty ground:
 | --- | --- |
 | Play / stop | **Space** or Play button |
 | Move cursor | Click cell, or arrow keys |
-| Write a note | Drag from **dock keyboard**, double-click free step, or place-menu **NOTE** |
+| Write a note | Drag from **dock keyboard** onto a step, empty cell (new 1-step lane), or NESW of a lane end (grow); double-click; or place-menu **NOTE** |
 | Transpose note | Shift+↑↓ (⌘/Ctrl+Shift for octave) |
 | Gate / lock / jump | Place menu on a free step (**GATE** / **LOCK** / **FLOW**) |
 | Move tile / lane | Drag tile or **CHAN** head |

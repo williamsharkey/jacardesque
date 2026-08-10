@@ -3367,7 +3367,8 @@ export class JacquardUI {
           d.ghost.style.left = ev.clientX + 8 + "px";
           d.ghost.style.top = ev.clientY + 8 + "px";
           const point = this.view.score && Style.cellAt(this.view.localPoint(ev));
-          const valid = point && this.editor.canPlaceTileAt(point);
+          // Empty ground = new 1-step lane; NESW of a lane end = grow; rail = put
+          const valid = point && this.editor.canDropNoteAt(point);
           d.ghost.classList.toggle("valid", !!valid);
           d.ghost.style.opacity = valid ? "1" : "0.5";
         }
@@ -3381,8 +3382,10 @@ export class JacquardUI {
         if (d?.ghost) d.ghost.remove();
         if (d?.armed) {
           const point = Style.cellAt(this.view.localPoint(ev));
-          if (this.editor.canPlaceTileAt(point)) {
+          if (point && this.editor.canDropNoteAt(point)) {
             this.editor.placeNoteAt(point, note);
+            this.syncDockLaneLabel?.();
+            this.view.paint();
           }
         }
         this.canvas.focus();

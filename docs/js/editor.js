@@ -9,9 +9,12 @@ import {
   ChannelTile,
   CellKind,
   gp,
+  gpEq,
   noteEventFromPatch,
   Pitch,
   PatchBank,
+  Step,
+  toroidalDelta,
 } from "./core.js";
 import {
   createFxModule,
@@ -352,12 +355,158 @@ export class ScoreEditor {
     this.delete();
   }
 
-  /** Place note at grid point if it's a free/valid lane step. */
+  /**
+   * Place a note from the dock piano (or similar):
+   *  1. empty ground NESW of a lane end/start → grow path + note
+   *  2. existing free rail / stack → put note
+   *  3. empty ground elsewhere → new length-1 channel lane with that note
+   *
+   * Grow is preferred over vertical stacking when the cell is free ground
+   * next to a path end (so N/E/S/W lengthens the lane, as intended).
+   */
   placeNoteAt(point, note) {
     if (!point) return false;
+    point = this.score.wrap(point);
     this.setCursor(point);
     this._notePitch = note;
-    return this.put({ kind: "NOTE", note });
+
+    // Prefer path growth on free ground adjacent to ends
+    if (this._noteDropGroundOk(point) && this._findNoteGrowTarget(point)) {
+      return this.placeNoteOnGround(point, note);
+    }
+
+    if (this.canPlaceTileAt(point)) {
+      return this.put({ kind: "NOTE", note });
+    }
+
+    return this.placeNoteOnGround(point, note);
+  }
+
+  /** True if a dock-note drop may land here (rail, grow end, or new 1-step lane). */
+  canDropNoteAt(point) {
+    if (!point) return false;
+    point = this.score.wrap(point);
+    if (this._noteDropGroundOk(point)) return true;
+    if (this.canPlaceTileAt(point)) return true;
+    return false;
+  }
+
+  /**
+   * Cell is free enough to receive a path step (new or grown).
+   * Head/term markers of a channel lane count as free for *that* lane
+   * (growing into them slides the marker out of the way).
+   */
+  _noteDropGroundOk(point, exceptLane = null) {
+    ensureFxLists(this.score);
+    ensureInstruments(this.score);
+    if (findFxAt(this.score, point)) return false;
+    if (findInstAt(this.score, point)) return false;
+    if (findTriggerAt(this.score, point)) return false;
+    const cell = this.score.at(point);
+    if (cell.kind === CellKind.Head || cell.kind === CellKind.Term) {
+      if (!cell.lane?.channel) return false;
+      // Growing this lane into its own marker is allowed
+      if (exceptLane && cell.lane !== exceptLane) {
+        return this.score.isFree(point, exceptLane);
+      }
+      return this.score.isFree(point, cell.lane);
+    }
+    if (cell.kind !== CellKind.Empty) return false;
+    return this.score.isFree(point, exceptLane);
+  }
+
+  _isOrthoAdjacent(a, b) {
+    const d = toroidalDelta(a, b, this.score.gridW || 32, this.score.gridH || 16);
+    return (Math.abs(d.dx) === 1 && d.dy === 0) ||
+      (d.dx === 0 && Math.abs(d.dy) === 1);
+  }
+
+  /**
+   * Prefer growing the focus lane, then any channel lane whose first/last
+   * step (or head/term marker) is NESW-adjacent to `point`.
+   * @returns {{ lane, which: 'end'|'start' } | null}
+   */
+  _findNoteGrowTarget(point) {
+    const lanes = this.score.channelLanes || [];
+    const focus = this.focusLane;
+    const ordered = focus
+      ? [focus, ...lanes.filter((l) => l !== focus)]
+      : lanes.slice();
+
+    for (const lane of ordered) {
+      if (!lane?.channel) continue;
+      if (!this._noteDropGroundOk(point, lane)) continue;
+      lane.ensurePath?.();
+      if (!lane.path?.length) continue;
+      const first = lane.path[0];
+      const last = lane.path[lane.path.length - 1];
+      // Dropping directly on the term/head marker grows that end
+      if (!lane.circular && gpEq(point, lane.termPoint)) {
+        return { lane, which: "end" };
+      }
+      if (!lane.circular && gpEq(point, lane.headPoint)) {
+        return { lane, which: "start" };
+      }
+      const atEnd = this._isOrthoAdjacent(last, point);
+      const atStart = this._isOrthoAdjacent(first, point);
+      // Length-1: first===last → prefer append when both match (e.g. on term)
+      if (atEnd) return { lane, which: "end" };
+      if (atStart) return { lane, which: "start" };
+    }
+    return null;
+  }
+
+  /**
+   * Empty ground: create a 1-step lane, or lengthen an adjacent lane end.
+   */
+  placeNoteOnGround(point, note) {
+    point = this.score.wrap(point);
+    if (!this._noteDropGroundOk(point)) return false;
+
+    const grow = this._findNoteGrowTarget(point);
+    if (grow) {
+      const { lane, which } = grow;
+      lane.ensurePath();
+      lane.circular = false;
+      if (which === "end") {
+        lane.addStep(point);
+        const step = lane.steps.length - 1;
+        lane.steps[step].tiles.push(new NoteTile(note, this._noteLength));
+        this.setCursor(lane.cellPoint(step, 0));
+      } else {
+        // Prepend a step at the free cell (grow from start)
+        const step = new Step();
+        step.tiles.push(new NoteTile(note, this._noteLength));
+        lane.steps.unshift(step);
+        lane.path.unshift(gp(point.x, point.y));
+        lane.x = point.x;
+        lane.y = point.y;
+        lane.activeFrom = 0;
+        lane.activeTo = lane.steps.length;
+        this.setCursor(lane.cellPoint(0, 0));
+      }
+      this.focusLaneIndex = this.score.channelLanes.indexOf(lane);
+      this.commit();
+      return true;
+    }
+
+    // Brand-new length-1 channel lane on this cell
+    const lane = this.score.addLane(
+      point.x,
+      point.y,
+      new ChannelTile(this.channel, 16, ""),
+      1,
+    );
+    lane.path = [gp(point.x, point.y)];
+    lane.syncOrigin();
+    lane.circular = false;
+    lane.activeFrom = 0;
+    lane.activeTo = 1;
+    lane.steps[0].tiles.push(new NoteTile(note, this._noteLength));
+    this.setCursor(lane.cellPoint(0, 0));
+    this.focusLaneIndex = this.score.channelLanes.indexOf(lane);
+    this.commit();
+    return true;
   }
 
   /** Preview pitch on focus lane channel (via nearest instrument if any). */
