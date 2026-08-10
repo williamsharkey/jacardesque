@@ -2,50 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jacquardesque — play the demo</title>
-<meta name="description" content="Jacquardesque is a public fork of keijiro/Jacquard. Play the static grid-sequencer mockup demo here.">
-<meta http-equiv="refresh" content="0; url=mockup.html">
-<link rel="canonical" href="mockup.html">
-<style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    display: grid;
-    place-items: center;
-    background: #16161a;
-    color: #f2f2ee;
-    font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
-    text-align: center;
-    padding: 2rem;
-  }
-  a { color: #c8c8c4; }
-  a.primary {
-    display: inline-block;
-    margin: 1rem 0;
-    padding: 0.7rem 1.2rem;
-    background: #34343c;
-    color: #f2f2ee;
-    text-decoration: none;
-    border-radius: 6px;
-  }
-  a.primary:hover { background: #44444e; }
-  .credit { opacity: 0.75; font-size: 0.9rem; max-width: 36rem; line-height: 1.5; }
-</style>
-<script>location.replace("mockup.html");</script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jacquardesque — grid sequencer</title>
+<meta name="description" content="Jacquardesque is a full Web Audio port of keijiro/Jacquard, a prototype grid sequencer with FM synthesis, parameter locks, gates, and jumps.">
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <main>
-    <h1>Jacquardesque</h1>
-    <p>Static mockup demo for the grid sequencer prototype.</p>
-    <p><a class="primary" href="mockup.html">Play the demo</a></p>
-    <p class="credit">
-      Jacquardesque is a fork of
-      <a href="https://github.com/keijiro/Jacquard">keijiro/Jacquard</a>
-      by <a href="https://github.com/keijiro">Keijiro Takahashi</a>.
-      Full credit to the original author and project.
-    </p>
-  </main>
+  <div id="app">
+    <p style="padding:2rem;color:#9a9a96">Loading Jacquardesque…</p>
+  </div>
+  <div class="credit-bar">
+    Jacquardesque — Web Audio port of
+    <a href="https://github.com/keijiro/Jacquard">keijiro/Jacquard</a>
+    by Keijiro Takahashi ·
+    <a href="mockup.html">static mockup</a>
+  </div>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>

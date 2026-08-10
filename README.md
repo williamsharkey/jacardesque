@@ -1,33 +1,39 @@
 Jacquardesque
 =============
 
-**Jacquardesque** is a public fork of
+**Jacquardesque** is a public fork and full **Web Audio** port of
 [**keijiro/Jacquard**](https://github.com/keijiro/Jacquard) by
 [Keijiro Takahashi](https://github.com/keijiro).
 
-This repository starts from that project so we can experiment and extend it
-while giving clear credit to the original work. Jacquard itself remains the
-upstream prototype; Jacquardesque is not a rebrand of the original author’s
-project.
+Jacquard remains the upstream Unity prototype. Jacquardesque keeps that
+provenance visible: this is a fork and a browser port of that work, not an
+independent reimplementation without credit.
 
 | | |
 | --- | --- |
 | Upstream | [github.com/keijiro/Jacquard](https://github.com/keijiro/Jacquard) |
 | This fork | [github.com/williamsharkey/jacardesque](https://github.com/williamsharkey/jacardesque) |
-| Play the demo | [williamsharkey.github.io/jacardesque](https://williamsharkey.github.io/jacardesque/) |
+| **Play in the browser** | **[williamsharkey.github.io/jacardesque](https://williamsharkey.github.io/jacardesque/)** |
 
 Play the demo
 -------------
 
-The browser demo is the static UI mockup from the original project, published
-via **GitHub Pages**:
-
 **[https://williamsharkey.github.io/jacardesque/](https://williamsharkey.github.io/jacardesque/)**
 
-(Also available as [`docs/mockup.html`](docs/mockup.html) in this repo.)
+Click **Play** (or press Space). Browsers require a gesture before audio starts.
 
-The full interactive sequencer is a Unity project (see below). The Pages demo
-is the look/layout mockup, not a WebGL build of the Unity app.
+The web app is a no-compromise port of the prototype’s behaviour:
+
+- Sample-accurate scheduling on the audio clock (`AudioWorklet`)
+- Two-operator FM voice pool with voice stealing (same maths as the Unity core)
+- Freeverb reverb + tempo-locked delay with rate-limited tap (same buses)
+- Full plane editor: lanes anywhere, stacks, gates, locks, jumps / JDST
+- Parameter locks (absolute / relative) on every patch field including pan & sends
+- Sound / Lock / Send FX panels, value bars, file slots in `localStorage`
+- Same text score format (`.jacquard` v8)
+
+The original static look mockup is still at
+[docs/mockup.html](docs/mockup.html) (also linked from the live site).
 
 About Jacquard (upstream)
 -------------------------
@@ -38,14 +44,14 @@ turn sixteen slots into something that changes as it repeats.
 
 Built with Unity 6.5 (6000.5.6f1). Open the project and play `Assets/Main.unity`.
 
-Using it
---------
+Using it (web and Unity)
+------------------------
 
 | Action | How |
 | --- | --- |
 | Move the cursor | Click a cell, or the arrow keys |
 | Write a note | Double click a free cell, or its `NOTE` button on the Tile panel |
-| Transpose | Shift+up/down for a semitone, add command for an octave |
+| Transpose | Shift+up/down for a semitone, add command/ctrl for an octave |
 | Add a gate or a lock | The buttons the Tile panel offers on a free cell |
 | Remove a tile | Delete on the Tile panel, or the delete key |
 | Move a tile | Drag it; within its own step that reorders the stack |
@@ -55,13 +61,13 @@ Using it
 | New lane | Select bare ground, then New lane; delete a lane from its `CHAN` cell |
 | Branch | The `JUMP` button, which brings its `JDST` lane with it |
 | Details of a tile | The panel on the right follows the cursor |
-| Set a number | Drag its bar right or up, shift for fine; double click to type one |
+| Set a number | Drag its bar right or up; double click to type one |
 | Timbre | Select a `CHAN` cell, which brings up the Sound panel for its channel |
 | Reverb and delay | The Send FX button opens the panel they are set on; how much of a channel reaches each is the last two rows of its Sound panel |
 | What a lock holds | Select it, then move a bar on the Lock panel; click a name to let go |
 | Play | Space, or the Play button |
 | Tempo | The bpm bar beside Play, which the delay is in time with |
-| Pan the plane | Drag from an empty cell, two finger swipe, or command+drag |
+| Pan the plane | Drag from an empty cell |
 
 A tile goes on free ground only: a lane's empty step, the cell under a stack, or
 the `TERM` cell, which grows the lane by a step. A stack is therefore built from
@@ -78,8 +84,29 @@ A lane holds its whole row from `CHAN` to `TERM` whether anything is written on
 it yet or not, so nothing else can grow across it and no lane can be dropped on
 one. Give a lane a clear row of its own and it will take tiles anywhere along it.
 
-Scores are saved under `Application.persistentDataPath/Scores` as plain text,
-one line per step; pick a slot with the File arrows.
+Scores: Unity saves under `Application.persistentDataPath/Scores`; the web port
+saves named slots in `localStorage` as the same plain-text format.
+
+Web architecture
+----------------
+
+| Path | Role |
+| --- | --- |
+| `docs/js/core.js` | Model, format, sequencer (port of `Assets/Core`) |
+| `docs/js/processor.js` | `AudioWorklet` FM pool, reverb, delay |
+| `docs/js/audio.js` | Main-thread clock / note bridge |
+| `docs/js/editor.js` | Editing operations |
+| `docs/js/ui.js` | Score plane + panels |
+| `docs/js/main.js` | App glue |
+| `docs/index.html` | GitHub Pages entry |
+
+Local preview: serve `docs/` over HTTP (modules + worklets need a server), e.g.
+
+```bash
+cd docs && python3 -m http.server 8080
+```
+
+then open `http://localhost:8080/`.
 
 Documentation
 -------------
@@ -88,8 +115,8 @@ Documentation
 | --- | --- |
 | [docs/prototype.md] | What this prototype is for |
 | [docs/sequencer.md] | The sequencer specification |
-| [docs/mockup.html] | The static mockup the look comes from (also the GitHub Pages demo) |
-| [docs/implementation.md] | How it is built, and the decisions behind it |
+| [docs/mockup.html] | The static mockup the look comes from |
+| [docs/implementation.md] | How the Unity build is put together |
 
 [docs/prototype.md]: docs/prototype.md
 [docs/sequencer.md]: docs/sequencer.md
@@ -102,6 +129,8 @@ Credit
 Original project: **[Jacquard](https://github.com/keijiro/Jacquard)** by
 **[Keijiro Takahashi](https://github.com/keijiro)** ([@keijiro](https://github.com/keijiro)).
 
-Jacquardesque keeps that provenance visible: this is a fork, not an independent
-reimplementation. Please prefer starring and following the upstream repository
-for the author’s work.
+FM voice and UI patterns draw on the same author’s related work
+([unity-sap-test](https://github.com/keijiro/unity-sap-test),
+[uitk-scrollarea](https://github.com/keijiro/uitk-scrollarea)).
+
+Please prefer starring and following the upstream repository for the author’s work.

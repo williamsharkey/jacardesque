@@ -1,0 +1,298 @@
+/* Jacquardesque web UI — monochrome flat style from mockup.html */
+
+:root {
+  color-scheme: dark;
+  --bg: #16161a;
+  --note-line: #e8e8e4;
+  --note-text: #f2f2ee;
+  --marker: #9a9a96;
+  --dot: #4e4e54;
+  --ctrl: #34343c;
+  --ctrl-hover: #44444e;
+  --fill: #6c6c76;
+  --fill-active: #84848e;
+  --panel: #1e1e24;
+  --panel-line: #3a3a44;
+  --label: #9a9a96;
+  font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--note-text);
+  overflow: hidden;
+}
+
+#app,
+.jacquard-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--panel-line);
+  background: var(--bg);
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.transport .tempo-row {
+  width: 120px;
+  margin: 0;
+}
+
+.transport .status {
+  color: var(--label);
+  font-size: 12px;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+
+.body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.score-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  touch-action: none;
+  background: var(--bg);
+}
+
+.score-canvas {
+  display: block;
+  outline: none;
+  cursor: default;
+}
+
+.panel-column {
+  position: absolute;
+  top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 3;
+  max-height: calc(100% - 20px);
+  overflow: auto;
+}
+
+.panel-column.right {
+  right: 10px;
+}
+
+.panel-column.left {
+  left: 10px;
+}
+
+.panel {
+  pointer-events: auto;
+  width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.panel.hidden {
+  display: none;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--label);
+  margin-bottom: 8px;
+}
+
+.panel-close {
+  min-width: 28px !important;
+  height: 24px;
+  padding: 0 6px !important;
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.caption {
+  font-size: 12px;
+  color: var(--note-text);
+  line-height: 1.35;
+}
+
+.divider {
+  height: 1px;
+  background: var(--panel-line);
+  margin: 6px 0;
+}
+
+.palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.btn {
+  appearance: none;
+  border: 0;
+  background: var(--ctrl);
+  color: var(--note-text);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 28px;
+}
+
+.btn:hover {
+  background: var(--ctrl-hover);
+}
+
+.btn.active {
+  outline: 1px solid var(--note-text);
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  min-height: 26px;
+}
+
+.control-label,
+.lock-label {
+  width: 72px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--label);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.lock-label {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+button.lock-label:hover {
+  color: var(--note-text);
+}
+
+.value-bar {
+  position: relative;
+  flex: 1;
+  height: 22px;
+  background: #2a2a32;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.value-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: var(--fill);
+  pointer-events: none;
+}
+
+.value-bar.active .value-bar-fill {
+  background: var(--fill-active);
+}
+
+.value-bar.released {
+  opacity: 0.45;
+}
+
+.value-bar-readout {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--note-text);
+  pointer-events: none;
+}
+
+.chooser .chooser-value {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.credit-bar {
+  position: fixed;
+  left: 10px;
+  bottom: 8px;
+  z-index: 4;
+  font-size: 11px;
+  color: var(--marker);
+  pointer-events: none;
+}
+
+.credit-bar a {
+  pointer-events: auto;
+  color: var(--marker);
+}
+
+@media (max-width: 720px) {
+  .panel {
+    width: 180px;
+  }
+
+  .control-label,
+  .lock-label {
+    width: 56px;
+  }
+}
