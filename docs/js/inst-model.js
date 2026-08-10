@@ -51,6 +51,25 @@ export function ensureInstruments(score) {
     m.channel = PatchBank.clamp(m.channel || 1);
     if (!m.type || !InstTypes[m.type]) m.type = "fm";
   }
+  // One-time soft migrate: lanes with channel numbers but no instrumentId
+  // get the first instrument sharing that PatchBank channel (not distance).
+  if (!score._instAssocMigrated) {
+    for (const lane of score.channelLanes || []) {
+      if (lane.instrumentId) continue;
+      if (!lane.channel) continue;
+      const ch = lane.channel.channel | 0;
+      const match = score.instruments.find((m) => (m.channel | 0) === ch);
+      if (match) lane.instrumentId = match.id;
+    }
+    score._instAssocMigrated = true;
+  }
+  // Drop stale ids
+  for (const lane of score.channelLanes || []) {
+    if (!lane.instrumentId) continue;
+    if (!score.instruments.some((m) => m.id === lane.instrumentId)) {
+      lane.instrumentId = null;
+    }
+  }
   return score;
 }
 
@@ -228,22 +247,55 @@ export function laneTermPoint(lane) {
   return lane.termPoint;
 }
 
-/** Instrument driven by this channel lane (many lanes may share one). */
+/**
+ * Explicit instrument association (set on create / via head-term picker).
+ * No distance-based auto-routing — only the stored instrumentId.
+ */
 export function laneInstrument(score, lane) {
   if (!lane?.channel) return null;
-  const term = laneTermPoint(lane);
-  if (!term) return null;
-  return nearestInstrument(score, term);
+  ensureInstruments(score);
+  const id = lane.instrumentId;
+  if (!id) return null;
+  return score.instruments.find((m) => m.id === id) || null;
+}
+
+/**
+ * Bind a channel lane to an instrument instance (or clear with null).
+ * Syncs PatchBank channel + display label to match.
+ */
+export function setLaneInstrument(score, lane, instOrId) {
+  if (!lane?.channel) return false;
+  ensureInstruments(score);
+  if (instOrId == null || instOrId === "") {
+    lane.instrumentId = null;
+    return true;
+  }
+  const id = typeof instOrId === "string" ? instOrId : instOrId.id;
+  const inst = score.instruments.find((m) => m.id === id);
+  if (!inst) {
+    lane.instrumentId = null;
+    return false;
+  }
+  lane.instrumentId = inst.id;
+  lane.channel.channel = PatchBank.clamp(inst.channel);
+  lane.channel.label = instrumentInstanceName(score, inst);
+  return true;
 }
 
 /**
  * Resolve PatchBank channel for a lane:
- * instrument association wins; else ChannelTile.channel.
+ * explicit instrument association wins; else ChannelTile.channel.
  */
 export function resolveLaneChannel(score, lane) {
   const inst = laneInstrument(score, lane);
   if (inst) return PatchBank.clamp(inst.channel);
   return PatchBank.clamp(lane?.channel?.channel ?? 1);
+}
+
+/** Color for drawing a lane (falls back to neutral note line). */
+export function laneColor(score, lane, fallback = "#a1a1aa") {
+  const inst = laneInstrument(score, lane);
+  return inst ? instrumentColor(inst) : fallback;
 }
 
 /**
@@ -294,27 +346,12 @@ export function manhattanBlockPath(from, to, gridW = 32, gridH = 16) {
   return path;
 }
 
-/** All underlight paths: { lane, inst, path, color } for drawing. */
-export function instrumentLinkPaths(score) {
-  ensureInstruments(score);
-  const out = [];
-  if (!score.instruments.length) return out;
-  const gw = score.gridW || 32;
-  const gh = score.gridH || 16;
-  for (const lane of score.channelLanes || []) {
-    const inst = laneInstrument(score, lane);
-    if (!inst) continue;
-    const term = laneTermPoint(lane);
-    if (!term) continue;
-    const path = manhattanBlockPath(term, { x: inst.x, y: inst.y }, gw, gh);
-    out.push({
-      lane,
-      inst,
-      path,
-      color: instrumentColor(inst),
-    });
-  }
-  return out;
+/**
+ * @deprecated Distance underlights removed — association is explicit.
+ * Kept as empty for any residual callers.
+ */
+export function instrumentLinkPaths(_score) {
+  return [];
 }
 
 /** Stable pastel per instrument id/type for underlights. */

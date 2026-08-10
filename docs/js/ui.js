@@ -44,12 +44,13 @@ import {
   InstParamBars,
   instParamValue,
   setInstParamValue,
-  instrumentLinkPaths,
   instrumentColor,
   instrumentInstanceName,
   instrumentShortLabel,
   canPlaceInstrumentAt,
   syncInstrumentPatch,
+  laneInstrument,
+  laneColor,
 } from "./inst-model.js";
 
 // ---------------------------------------------------------------------------
@@ -463,6 +464,11 @@ export class ScoreView {
     this._instSliderDrag = null;
     /** Selected-object delete badge hit target: { kind, id, x, y, r } */
     this._deleteBadge = null;
+    /**
+     * Head/term instrument picker (grid-native rows under the marker):
+     * { lane, anchor, which, items:[{id,label,color}], hoverIndex }
+     */
+    this._instPick = null;
     this._panning = false;
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
@@ -631,6 +637,15 @@ export class ScoreView {
       e.preventDefault();
       this.onDeleteSelection?.();
       this.paint();
+      return;
+    }
+
+    // Instrument picker open: click a row to assign, or outside to dismiss
+    if (this._instPick) {
+      e.preventDefault();
+      this._updateInstPick(e);
+      const commit = this._instPick.hoverIndex >= 0;
+      this._endInstPick(commit);
       return;
     }
 
@@ -908,10 +923,17 @@ export class ScoreView {
     // Hover tooltip when idle (no drag gesture)
     if (
       !this._loopDrag && !this._trigDrag && !this._sliderDrag && !this._fxMoveDrag &&
-      !this._instMoveDrag && !this._instSliderDrag &&
+      !this._instMoveDrag && !this._instSliderDrag && !this._instPick &&
       !this._placing && !this._groundGesture && !this._panning && !this._grabbed
     ) {
       this._updateHoverTip(this.localPoint(e));
+    }
+
+    // Instrument picker hover (open until click)
+    if (this._instPick) {
+      this._updateInstPick(e);
+      this.paint();
+      return;
     }
 
     if (this._groundGesture) {
@@ -1133,9 +1155,12 @@ export class ScoreView {
         if (d.snap) d.lane.restore(d.snap);
         this.score.commitReshape(d.lane, d.which, d.hover);
         this.onLoopReshaped?.();
-      } else if (d.snap) {
-        // Click without drag — restore any accidental preview
-        d.lane.restore(d.snap);
+      } else {
+        if (d.snap) d.lane.restore(d.snap);
+        // Click (no drag) on start/end of a channel lane → instrument picker
+        if (d.lane?.channel) {
+          this._beginInstPick(d.lane, d.which === "start" ? "start" : "end");
+        }
       }
       this.paint();
       return;
@@ -1441,10 +1466,179 @@ export class ScoreView {
     this._fxMoveDrag = null;
     this._instMoveDrag = null;
     this._instSliderDrag = null;
+    this._instPick = null;
     this._panning = false;
     this._panArmed = false;
     this._endDrag();
     this.paint();
+  }
+
+  /**
+   * Grid-native instrument picker under head/term (one row per instrument).
+   * Spans 3 cells wide; currently associated instrument is highlighted.
+   */
+  _beginInstPick(lane, which) {
+    ensureInstruments(this.score);
+    if (!lane?.channel) return;
+    lane.ensurePath();
+    const anchor = which === "start" ? lane.headPoint : lane.termPoint;
+    const items = this.score.instruments.map((m) => ({
+      id: m.id,
+      label: instrumentInstanceName(this.score, m),
+      color: instrumentColor(m),
+    }));
+    // Allow clearing association
+    items.push({ id: null, label: "None", color: "#71717a" });
+    const cur = lane.instrumentId || null;
+    let hoverIndex = items.findIndex((it) => it.id === cur);
+    if (hoverIndex < 0) hoverIndex = -1;
+    this._instPick = {
+      lane,
+      which,
+      anchor: { x: anchor.x, y: anchor.y },
+      items,
+      hoverIndex,
+      currentId: cur,
+      span: 3, // cells wide
+    };
+  }
+
+  _updateInstPick(e) {
+    const g = this._instPick;
+    if (!g) return;
+    const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
+    const relY = point.y - (g.anchor.y + 1);
+    const relX = point.x - g.anchor.x;
+    // Columns of the menu: anchor.x .. anchor.x+span-1 (toroidal)
+    if (relY < 0 || relY >= g.items.length) {
+      g.hoverIndex = -1;
+      return;
+    }
+    // Accept any column near the menu band (within span, or slightly left)
+    const inBand = relX >= -1 && relX < g.span + 1;
+    g.hoverIndex = inBand ? relY : -1;
+  }
+
+  _endInstPick(commit) {
+    const g = this._instPick;
+    this._instPick = null;
+    if (!g || !commit) {
+      this.paint();
+      return;
+    }
+    if (g.hoverIndex >= 0 && g.hoverIndex < g.items.length) {
+      const item = g.items[g.hoverIndex];
+      this.onLaneInstrumentAssign?.(g.lane, item.id);
+    }
+    this.paint();
+  }
+
+  _drawInstPick(ctx) {
+    const g = this._instPick;
+    if (!g) return;
+    const shellAlpha = 0.88;
+    const span = g.span || 3;
+    // Origin marker highlight
+    {
+      const r = Style.cellRect(g.anchor);
+      ctx.fillStyle = withAlpha("#f2f2ee", 0.14);
+      roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+      ctx.fill();
+      ctx.strokeStyle = withAlpha("#f2f2ee", 0.6);
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+      ctx.stroke();
+      ctx.fillStyle = withAlpha("#f5f5f4", 0.9);
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("voice", r.x + r.w / 2, r.y + r.h / 2);
+    }
+    // Header row under origin
+    {
+      const p = this.score.wrap(gp(g.anchor.x, g.anchor.y + 1));
+      // span cells
+      for (let dx = 0; dx < span; dx++) {
+        const c = this.score.wrap(gp(g.anchor.x + dx, g.anchor.y + 1));
+        const r = Style.cellRect(c);
+        ctx.globalAlpha = shellAlpha;
+        ctx.fillStyle = withAlpha("#38bdf8", 0.2);
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = withAlpha("#7dd3fc", 0.55);
+        ctx.lineWidth = 1;
+        roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      const hr = Style.cellRect(p);
+      ctx.fillStyle = withAlpha("#e0f2fe", 0.95);
+      ctx.font = "700 9px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("instrument", hr.x + 6, hr.y + hr.h / 2);
+    }
+    // Items: one row each starting at anchor.y + 2
+    for (let i = 0; i < g.items.length; i++) {
+      const item = g.items[i];
+      const rowY = g.anchor.y + 2 + i;
+      const current = item.id === g.currentId;
+      const hover = g.hoverIndex === i;
+      for (let dx = 0; dx < span; dx++) {
+        const c = this.score.wrap(gp(g.anchor.x + dx, rowY));
+        const r = Style.cellRect(c);
+        ctx.globalAlpha = shellAlpha;
+        if (current) {
+          ctx.fillStyle = withAlpha(item.color, hover ? 0.55 : 0.4);
+        } else {
+          ctx.fillStyle = hover
+            ? withAlpha(item.color, 0.35)
+            : withAlpha("#3f3f46", 0.55);
+        }
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = current || hover
+          ? withAlpha(item.color, 0.95)
+          : withAlpha("#a1a1aa", 0.35);
+        ctx.lineWidth = current || hover ? 1.5 : 1;
+        roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      const labelCell = Style.cellRect(this.score.wrap(gp(g.anchor.x, rowY)));
+      const spanW = span * Style.StrideX - Style.Gap;
+      ctx.fillStyle = current || hover ? "#0c0c10" : withAlpha("#e4e4e7", 0.95);
+      ctx.font = (current ? "700 " : "600 ") + "10px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        (current ? "● " : "○ ") + item.label,
+        labelCell.x + 6,
+        labelCell.y + labelCell.h / 2,
+      );
+      // color chip
+      ctx.fillStyle = item.color;
+      ctx.beginPath();
+      ctx.arc(labelCell.x + spanW - 12, labelCell.y + labelCell.h / 2, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Foot hint
+    if (g.hoverIndex >= 0 && g.items[g.hoverIndex]) {
+      const tipY = g.anchor.y + 2 + g.hoverIndex;
+      const tip = Style.cellRect(this.score.wrap(gp(g.anchor.x, tipY)));
+      ctx.fillStyle = withAlpha("#fde68a", 0.95);
+      ctx.font = "600 9px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText("release → " + g.items[g.hoverIndex].label, tip.x, tip.y + tip.h + 3);
+    } else {
+      const tip = Style.cellRect(this.score.wrap(gp(g.anchor.x, g.anchor.y + 1)));
+      ctx.fillStyle = withAlpha("#c4b5fd", 0.9);
+      ctx.font = "600 9px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText("↓ pick instrument · release off list = cancel", tip.x, tip.y + tip.h + 3);
+    }
   }
 
   _endDrag() {
@@ -1495,7 +1689,6 @@ export class ScoreView {
     this._deleteBadge = null;
 
     this._drawLattice(ctx);
-    this._drawInstrumentLinks(ctx);
     this._drawRails(ctx);
     this._drawChains(ctx);
     this._drawLinks(ctx);
@@ -1509,6 +1702,7 @@ export class ScoreView {
     if (this._dragging && this._grabbed) this._drawGhosts(ctx);
     this._drawGestureGhosts(ctx);
     this._drawGroundShell(ctx);
+    this._drawInstPick(ctx);
   }
 
   /**
@@ -1902,32 +2096,6 @@ export class ScoreView {
     ctx.moveTo(x + s, y - s);
     ctx.lineTo(x - s, y + s);
     ctx.stroke();
-    ctx.restore();
-  }
-
-  _drawInstrumentLinks(ctx) {
-    if (!this.score) return;
-    ensureInstruments(this.score);
-    const links = instrumentLinkPaths(this.score);
-    if (!links.length) return;
-    ctx.save();
-    for (const link of links) {
-      const col = link.color || "#38bdf8";
-      const path = link.path || [];
-      for (let i = 0; i < path.length; i++) {
-        const c = path[i];
-        const r = Style.cellRect(c);
-        const isEnd = i === 0 || i === path.length - 1;
-        ctx.fillStyle = withAlpha(col, isEnd ? 0.28 : 0.16);
-        roundRect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Style.Radius);
-        ctx.fill();
-        // Subtle edge so the staircase reads as a pixel path
-        ctx.strokeStyle = withAlpha(col, isEnd ? 0.55 : 0.28);
-        ctx.lineWidth = 1;
-        roundRect(ctx, r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3, Style.Radius - 1);
-        ctx.stroke();
-      }
-    }
     ctx.restore();
   }
 
@@ -2399,8 +2567,9 @@ export class ScoreView {
   _drawRails(ctx) {
     for (const lane of this.score.lanes) {
       lane.ensurePath();
+      const col = laneColor(this.score, lane, Style.NoteLine);
       if (lane.circular && lane.path.length >= 2) {
-        this._drawCircularRail(ctx, lane);
+        this._drawCircularRail(ctx, lane, col);
         continue;
       }
       // Polyline rail: active segments full opacity, inactive at 0.5
@@ -2410,7 +2579,7 @@ export class ScoreView {
         const a = Style.cellCenter(lane.path[i]);
         const b = Style.cellCenter(lane.path[i + 1]);
         const on = lane.isStepActive(i) && lane.isStepActive(i + 1);
-        ctx.strokeStyle = withAlpha(Style.NoteLine, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
+        ctx.strokeStyle = withAlpha(col, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
@@ -2420,7 +2589,7 @@ export class ScoreView {
       if (lane.path.length === 1) {
         const c = Style.cellCenter(lane.path[0]);
         const on = lane.isStepActive(0);
-        ctx.strokeStyle = withAlpha(Style.NoteLine, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
+        ctx.strokeStyle = withAlpha(col, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
         ctx.beginPath();
         ctx.moveTo(c.x - 4, c.y);
         ctx.lineTo(c.x + 4, c.y);
@@ -2440,7 +2609,7 @@ export class ScoreView {
     }
   }
 
-  _drawCircularRail(ctx, lane) {
+  _drawCircularRail(ctx, lane, col = Style.NoteLine) {
     // Seamless tape-loop: points around centroid, animated dash offset
     const pts = lane.path.map((p) => Style.cellCenter(p));
     let cx = 0;
@@ -2456,7 +2625,7 @@ export class ScoreView {
     for (const p of pts) spread = Math.max(spread, Math.hypot(p.x - cx, p.y - cy));
     const r = Math.max(Style.StrideX * 1.2, spread * 0.9 + Style.CellWidth);
 
-    ctx.strokeStyle = withAlpha(Style.NoteLine, 0.55);
+    ctx.strokeStyle = withAlpha(col, 0.55);
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.lineDashOffset = -((this._anim || 0) * 0.6) % 10;
@@ -2472,7 +2641,7 @@ export class ScoreView {
       const a = -Math.PI / 2 + (i / n) * Math.PI * 2 + ((this._anim || 0) * 0.01);
       const x = cx + Math.cos(a) * r;
       const y = cy + Math.sin(a) * r;
-      ctx.fillStyle = Style.NoteLine;
+      ctx.fillStyle = col;
       ctx.beginPath();
       ctx.arc(x, y, 3, 0, Math.PI * 2);
       ctx.fill();
@@ -2542,11 +2711,12 @@ export class ScoreView {
   _drawTiles(ctx) {
     for (const lane of this.score.lanes) {
       lane.ensurePath();
+      const col = laneColor(this.score, lane, Style.NoteLine);
       if (lane.circular) {
-        this._drawCircularJoin(ctx, lane.headPoint);
+        this._drawCircularJoin(ctx, lane.headPoint, col);
       } else {
-        this._drawStartMark(ctx, lane.headPoint, lane.head);
-        this._drawTile(ctx, Terminator, lane.termPoint, 1);
+        this._drawStartMark(ctx, lane.headPoint, lane.head, col);
+        this._drawTile(ctx, Terminator, lane.termPoint, 1, col);
       }
       for (let i = 0; i < lane.steps.length; i++) {
         const active = lane.isStepActive(i);
@@ -2559,12 +2729,13 @@ export class ScoreView {
             lane.steps[i].tiles[d],
             lane.cellPoint(i, d),
             lifted ? 0.2 : alpha,
+            col,
           );
         }
         // Empty inactive rails: faint cell outline so the strip stays visible
         if (lane.steps[i].isEmpty && !active) {
           const r = Style.cellRect(lane.path[i]);
-          ctx.strokeStyle = withAlpha(Style.NoteLine, 0.35);
+          ctx.strokeStyle = withAlpha(col, 0.35);
           ctx.lineWidth = 1;
           ctx.setLineDash([2, 2]);
           roundRect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Style.Radius);
@@ -2576,19 +2747,19 @@ export class ScoreView {
   }
 
   /** Dal segno-style return mark at lane start (before first beat). */
-  _drawStartMark(ctx, point, head) {
+  _drawStartMark(ctx, point, head, col = Style.NoteLine) {
     const r = Style.cellRect(point);
     ctx.save();
-    ctx.strokeStyle = Style.NoteLine;
-    ctx.fillStyle = Style.ControlBackground;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = col;
+    ctx.fillStyle = withAlpha(col, 0.18);
+    ctx.lineWidth = 1.5;
     roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
     ctx.fill();
     ctx.stroke();
     // Segno-like S with dots + channel abbr
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;
-    ctx.fillStyle = Style.NoteText;
+    ctx.fillStyle = col;
     ctx.font = "700 13px Georgia,serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -2601,19 +2772,19 @@ export class ScoreView {
   }
 
   /** Combined start/end when loop is circular — two mating triangles. */
-  _drawCircularJoin(ctx, point) {
+  _drawCircularJoin(ctx, point, col = Style.NoteLine) {
     const r = Style.cellRect(point);
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;
     ctx.save();
-    ctx.fillStyle = Style.ControlBackground;
-    ctx.strokeStyle = Style.NoteLine;
-    ctx.lineWidth = 1;
+    ctx.fillStyle = withAlpha(col, 0.18);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
     roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
     ctx.fill();
     ctx.stroke();
     // Upper-left triangle and lower-right triangle that mate
-    ctx.fillStyle = Style.NoteText;
+    ctx.fillStyle = col;
     ctx.beginPath();
     ctx.moveTo(cx - 8, cy - 8);
     ctx.lineTo(cx + 2, cy - 8);
@@ -2644,8 +2815,9 @@ export class ScoreView {
     return depth >= this._grabbed.depth && depth < this._grabbed.depth + count;
   }
 
-  _drawTile(ctx, tile, point, alpha) {
+  _drawTile(ctx, tile, point, alpha, laneCol = null) {
     const r = Style.cellRect(point);
+    const col = laneCol || Style.NoteLine;
     ctx.save();
     ctx.globalAlpha = alpha;
     const control = isControlTile(tile);
@@ -2653,13 +2825,21 @@ export class ScoreView {
       roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
       ctx.fillStyle = Style.ControlBackground;
       ctx.fill();
+      ctx.strokeStyle = withAlpha(col, 0.85);
+      ctx.lineWidth = 1.25;
+      roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+      ctx.stroke();
     } else {
-      ctx.strokeStyle = Style.NoteLine;
-      ctx.lineWidth = 1;
+      // Note cells tinted by their instrument association
+      ctx.fillStyle = withAlpha(col, 0.12);
+      roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+      ctx.fill();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.25;
       roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
       ctx.stroke();
     }
-    drawTileContent(ctx, tile, r);
+    drawTileContent(ctx, tile, r, col);
     ctx.restore();
   }
 
@@ -2804,9 +2984,9 @@ function toward(from, to, distance) {
 // Tile icons / labels
 // ---------------------------------------------------------------------------
 
-function drawTileContent(ctx, tile, r) {
+function drawTileContent(ctx, tile, r, laneCol = null) {
   if (tile instanceof NoteTile) {
-    drawNote(ctx, tile, r);
+    drawNote(ctx, tile, r, laneCol);
     return;
   }
   if (tile instanceof ChannelTile) {
@@ -2844,12 +3024,13 @@ function drawTileContent(ctx, tile, r) {
   }
 }
 
-function drawNote(ctx, tile, r) {
+function drawNote(ctx, tile, r, laneCol = null) {
   const name = Pitch.toClassName(tile.note);
   const letter = name[0];
   const sharp = name.length > 1;
   const octave = String(Pitch.toOctave(tile.note));
-  ctx.fillStyle = Style.NoteText;
+  const ink = laneCol || Style.NoteText;
+  ctx.fillStyle = ink;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const cx = r.x + r.w / 2;
@@ -2865,7 +3046,7 @@ function drawNote(ctx, tile, r) {
   } else {
     ctx.fillText(letter + octave, cx, cy);
   }
-  // Duration: thin white bar under the name — width = gate length (1 step = full bar)
+  // Duration: thin bar under the name — width = gate length (1 step = full bar)
   const padX = 4;
   const barH = 3;
   const maxW = Math.max(4, r.w - padX * 2);
@@ -2874,10 +3055,10 @@ function drawNote(ctx, tile, r) {
   const barX = r.x + padX;
   const barY = r.y + r.h - padX - barH;
   // Track (dim) so short notes still read as “not full”
-  ctx.fillStyle = withAlpha("#f5f5f4", 0.18);
+  ctx.fillStyle = withAlpha(ink, 0.2);
   roundRect(ctx, barX, barY, maxW, barH, 1);
   ctx.fill();
-  ctx.fillStyle = "#f5f5f4";
+  ctx.fillStyle = withAlpha("#f5f5f4", 0.95);
   roundRect(ctx, barX, barY, barW, barH, 1);
   ctx.fill();
 }
@@ -3227,6 +3408,12 @@ export class JacquardUI {
       this.view.selectedAutoId = this.editor.selectedAutoId;
       this._refreshDockLaneLabel();
       this.refreshPanels(true);
+      this.view.paint();
+      this.canvas.focus();
+    };
+    this.view.onLaneInstrumentAssign = (lane, instId) => {
+      this.editor.assignLaneInstrument(lane, instId);
+      this._refreshDockLaneLabel();
       this.view.paint();
       this.canvas.focus();
     };

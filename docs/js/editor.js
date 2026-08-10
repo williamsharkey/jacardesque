@@ -36,6 +36,7 @@ import {
   removeInstrument,
   syncInstrumentPatch,
   resolveLaneChannel,
+  setLaneInstrument,
   InstTypes,
   instrumentInstanceName,
   findInstrumentSpawnCell,
@@ -202,6 +203,14 @@ export class ScoreEditor {
     return mod;
   }
 
+  /** Bind a lane to an instrument (head/term picker). */
+  assignLaneInstrument(lane, instId) {
+    if (!lane?.channel) return false;
+    const ok = setLaneInstrument(this.score, lane, instId);
+    if (ok) this.commit();
+    return ok;
+  }
+
   /** Delete currently selected FX / instrument / trigger (no cursor required). */
   deleteSelection() {
     ensureFxLists(this.score);
@@ -214,6 +223,10 @@ export class ScoreEditor {
     }
     if (this.selectedInstId) {
       const id = this.selectedInstId;
+      // Clear lane associations pointing at this instrument
+      for (const lane of this.score.channelLanes || []) {
+        if (lane.instrumentId === id) lane.instrumentId = null;
+      }
       removeInstrument(this.score, id);
       if (this.focusInstId === id) this.focusInstId = null;
       this.selectedInstId = null;
@@ -485,8 +498,12 @@ export class ScoreEditor {
     }
     const inst = findInstAt(this.score, point);
     if (inst) {
+      for (const lane of this.score.channelLanes || []) {
+        if (lane.instrumentId === inst.id) lane.instrumentId = null;
+      }
       removeInstrument(this.score, inst.id);
       if (this.selectedInstId === inst.id) this.selectedInstId = null;
+      if (this.focusInstId === inst.id) this.focusInstId = null;
       this.commit();
       return;
     }
@@ -611,19 +628,13 @@ export class ScoreEditor {
 
     // Ensure dock voice has a grid instrument (auto-spawn if missing)
     const inst = this.ensureDockInstrument(point);
-    const ch = inst?.channel ?? this.dockChannel;
-    const label = inst ? instrumentInstanceName(this.score, inst) : "";
 
     const grow = this._findNoteGrowTarget(point);
     if (grow) {
       const { lane, which } = grow;
       lane.ensurePath();
       lane.circular = false;
-      // Keep lane on the dock instrument channel when we know it
-      if (lane.channel && inst) {
-        lane.channel.channel = ch;
-        if (label) lane.channel.label = label;
-      }
+      // Growing keeps the lane's existing instrument association
       if (which === "end") {
         lane.addStep(point);
         const step = lane.steps.length - 1;
@@ -646,7 +657,9 @@ export class ScoreEditor {
       return true;
     }
 
-    // Brand-new length-1 channel lane on this cell
+    // Brand-new length-1 channel lane — pre-associate dock instrument
+    const ch = inst?.channel ?? this.dockChannel;
+    const label = inst ? instrumentInstanceName(this.score, inst) : "";
     const lane = this.score.addLane(
       point.x,
       point.y,
@@ -658,6 +671,7 @@ export class ScoreEditor {
     lane.circular = false;
     lane.activeFrom = 0;
     lane.activeTo = 1;
+    if (inst) setLaneInstrument(this.score, lane, inst);
     lane.steps[0].tiles.push(new NoteTile(note, this._noteLength));
     this.setCursor(lane.cellPoint(0, 0));
     this.focusLaneIndex = this.score.channelLanes.indexOf(lane);

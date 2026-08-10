@@ -85,12 +85,13 @@ When the playhead lights a step **adjacent** to that chip, the channel param lat
 
 ## Grid instruments
 
-Instrument pedals sit on free ground (place menu **INST**: Kick, Snare, Hat, …).
+Instrument pedals sit on free ground (place menu **INST**, or dock icons).
 
-- **Many lanes → one instrument**: each channel lane’s **end/repeat** marker (term) binds to the **nearest** instrument measured by Manhattan distance to that instrument’s **left-corner** cell.
-- **Underlight path**: the grid highlights the NESW **staircase of cells** from the term to that corner (not a single canvas line) so you can see the walk.
-- Pedals work like FX: grip to move, scrub param bars, drag a value off onto the grid as a cyan **channel** trigger.
-- If no instrument objects exist, lanes fall back to the classic channel number on the CHAN head.
+- **Many lanes → one instrument**: each channel lane has an **explicit** instrument association (not distance-based).
+- **Color**: the lane (rail, notes, start/end markers) uses that instrument’s color.
+- **Assign / change**: click the lane’s **start (𝄋)** or **end (TERM)** without dragging → a grid-native list opens **under** the marker (one instrument per row). The current voice is highlighted; click another (or **None**) to reassign. Dragging the start/end handle still reshapes the loop.
+- **Keyboard create**: dragging notes from the dock with a voice selected **pre-associates** the new lane to that instrument (and auto-spawns the pedal if missing). Growing an existing lane keeps its association.
+- Pedals work like FX: grip to move, scrub param bars, drag values out as cyan channel triggers.
 
 ## Grid FX (inserts)
 

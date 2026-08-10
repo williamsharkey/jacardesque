@@ -695,6 +695,11 @@ export class Lane {
     this.path = [];
     this.circular = false;
     this.jumpSource = null;
+    /**
+     * Explicit grid-instrument id this channel lane drives (many lanes → one).
+     * Set on keyboard-create or via head/term instrument picker — not by distance.
+     */
+    this.instrumentId = null;
     // Gray-out window: inactive prefix/suffix while reshaping (indices into path)
     this.activeFrom = 0;
     this.activeTo = null; // exclusive; null = steps.length
@@ -1726,6 +1731,7 @@ function writeLane(lines, score, lane) {
     }
   }
   if (lane.circular) head += " circular=1";
+  if (lane.instrumentId) head += " inst=" + lane.instrumentId;
   if (lane.path.length) {
     head += " path=" + lane.path.map((p) => p.x + "," + p.y).join(";");
   }
@@ -2002,6 +2008,7 @@ function readLane(score, tokens, number, links) {
     else if (key === "name" && tile instanceof ChannelTile) tile.label = decodeLaneName(value);
     else if (key === "from") links.push({ branch: lane, point: readPoint(value, number) });
     else if (key === "circular") lane.circular = value === "1" || value === "true";
+    else if (key === "inst") lane.instrumentId = value || null;
     else if (key === "path") {
       lane.path = value.split(";").filter(Boolean).map((pair) => {
         const [px, py] = pair.split(",");
