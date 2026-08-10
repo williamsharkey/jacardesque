@@ -380,6 +380,94 @@ button.lock-label:hover {
   transform: rotate(-2deg);
 }
 
+/* In-place place menu (click-drag on free cells) */
+.place-menu {
+  position: fixed;
+  z-index: 20;
+  width: 200px;
+  max-height: 280px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  user-select: none;
+}
+
+.place-menu.hidden {
+  display: none;
+}
+
+.place-menu-hint {
+  font-size: 10px;
+  color: var(--label);
+  padding: 6px 8px 4px;
+  letter-spacing: 0.02em;
+}
+
+.place-menu-cats {
+  display: flex;
+  gap: 3px;
+  padding: 0 6px 6px;
+}
+
+.place-menu-cat {
+  flex: 1;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 5px 2px;
+  border-radius: 4px;
+  background: #2a2a32;
+  color: var(--label);
+}
+
+.place-menu-cat.active {
+  background: var(--fill);
+  color: var(--note-text);
+  outline: 1px solid var(--note-text);
+}
+
+.place-menu-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 4px;
+  max-height: 180px;
+}
+
+.place-menu-item {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 8px;
+  border-radius: 4px;
+  color: var(--marker);
+  margin-bottom: 1px;
+}
+
+.place-menu-item.default {
+  color: var(--label);
+}
+
+.place-menu-item.active {
+  background: var(--ctrl-hover);
+  color: var(--note-text);
+  outline: 1px solid var(--note-text);
+}
+
+.place-menu-foot {
+  font-size: 10px;
+  color: var(--label);
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--panel-line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 720px) {
   .panel {
     width: 180px;

@@ -22,6 +22,7 @@ import {
 } from "./core.js";
 import { Style } from "./style.js";
 import { InstrumentNames, InstrumentKeys } from "./instruments.js";
+import { PlaceMenu } from "./place-menu.js";
 
 // ---------------------------------------------------------------------------
 // Value bar ranges
@@ -325,6 +326,12 @@ export class ScoreView {
     this.onTilesDropped = null;
     this.onLaneDropped = null;
     this.onKey = null;
+    /** (point) => boolean — host decides if cell can take a new tile */
+    this.canPlaceAt = null;
+    /** () => number — centre pitch for place menu notes */
+    this.placeCentreNote = null;
+    /** ({ point, place }) => void — commit from place menu */
+    this.onPlaceCommit = null;
 
     this._grabbed = null;
     this._grabOrigin = null;
@@ -334,6 +341,8 @@ export class ScoreView {
     this._ghostDelta = { x: 0, y: 0 };
     this._playheads = [];
     this._dragCount = 1;
+    this._placing = false;
+    this.placeMenu = null;
 
     this._bind();
   }
@@ -398,6 +407,7 @@ export class ScoreView {
 
   rebuild() {
     this._endDrag();
+    this._endPlace(false);
     this.columns = Math.max(48, this.score.width + 10);
     this.rows = Math.max(28, this.score.height + 8);
     const size = Style.planeSize(this.columns, this.rows);
@@ -430,11 +440,29 @@ export class ScoreView {
     const pos = this.localPoint(e);
     const point = Style.cellAt(pos);
     this.setCursor(point);
-    if (e.detail >= 2) this.onDoubleClick?.();
+
+    // Double-click still quick-places a note on a free cell.
+    if (e.detail >= 2 && this.canPlaceAt?.(point)) {
+      this.onDoubleClick?.();
+      return;
+    }
 
     const cell = this.score.at(point);
+
+    // Placeable free cell (rail / empty / TERM grow): open in-place gesture menu.
+    if (this.canPlaceAt?.(point)) {
+      e.preventDefault();
+      this._placing = true;
+      this._placeOrigin = { x: e.clientX, y: e.clientY };
+      const centre = this.placeCentreNote?.() ?? 60;
+      this.placeMenu?.begin(point, e, centre);
+      this.canvas.setPointerCapture(e.pointerId);
+      this.paint();
+      return;
+    }
+
     if (cell.kind !== CellKind.Tile && cell.kind !== CellKind.Head) {
-      // Start plane pan from free ground
+      // True bare ground — pan the plane.
       this._panning = true;
       this._panOrigin = { x: e.clientX, y: e.clientY, sl: this.scroll.scrollLeft, st: this.scroll.scrollTop };
       this.scroll.setPointerCapture?.(e.pointerId);
@@ -449,6 +477,11 @@ export class ScoreView {
   }
 
   _pointerMove(e) {
+    if (this._placing) {
+      this.placeMenu?.update(e);
+      this.paint();
+      return;
+    }
     if (this._panning) {
       const dx = e.clientX - this._panOrigin.x;
       const dy = e.clientY - this._panOrigin.y;
@@ -478,6 +511,13 @@ export class ScoreView {
   }
 
   _pointerUp(e) {
+    if (this._placing) {
+      this._endPlace(true);
+      try {
+        this.canvas.releasePointerCapture(e.pointerId);
+      } catch (_) { /* ignore */ }
+      return;
+    }
     if (this._panning) {
       this._panning = false;
       return;
@@ -493,6 +533,18 @@ export class ScoreView {
     if (!dropped) return;
     if (grabbed.kind === CellKind.Head) this.onLaneDropped?.(grabbed.lane, point);
     else this.onTilesDropped?.(grabbed, point);
+  }
+
+  _endPlace(commit) {
+    if (!this._placing) return;
+    this._placing = false;
+    if (commit && this.placeMenu) {
+      const result = this.placeMenu.end();
+      if (result) this.onPlaceCommit?.(result);
+    } else {
+      this.placeMenu?.cancel();
+    }
+    this.paint();
   }
 
   _endDrag() {
@@ -696,6 +748,19 @@ export class ScoreView {
     ctx.lineWidth = 1;
     roundRect(ctx, r.x - 2.5, r.y - 2.5, r.w + 5, r.h + 5, Style.Radius + 2);
     ctx.stroke();
+
+    // While the place menu is open, fill the target cell so the "empty slot" is obvious.
+    if (this._placing && this.placeMenu?.point) {
+      const pr = Style.cellRect(this.placeMenu.point);
+      ctx.fillStyle = withAlpha(Style.Cursor, 0.12);
+      roundRect(ctx, pr.x, pr.y, pr.w, pr.h, Style.Radius);
+      ctx.fill();
+      ctx.strokeStyle = withAlpha(Style.Cursor, 0.85);
+      ctx.setLineDash([3, 3]);
+      roundRect(ctx, pr.x + 0.5, pr.y + 0.5, pr.w - 1, pr.h - 1, Style.Radius);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
   _drawDropCells(ctx) {
@@ -1084,6 +1149,13 @@ export class JacquardUI {
     this.view = new ScoreView(this.canvas, this.scroll);
     this.view.score = app.project.score;
     this.view.sequencer = app.sequencer;
+    this.view.placeMenu = new PlaceMenu(this.body);
+    this.view.canPlaceAt = (point) => this.editor.canPlaceAt(point);
+    this.view.placeCentreNote = () => this.editor.lastNotePitch;
+    this.view.onPlaceCommit = ({ point, place }) => {
+      this.editor.put(place, point);
+      this.canvas.focus();
+    };
     this.view.onCursorMoved = () => this.refreshPanels();
     this.view.onDoubleClick = () => this.editor.placeNote();
     this.view.onTilesDropped = (s, t) => this.editor.dropTiles(s, t);
@@ -1092,6 +1164,10 @@ export class JacquardUI {
       if (e.key === " ") {
         e.preventDefault();
         this.app.togglePlay();
+        return true;
+      }
+      if (e.key === "Escape" && this.view._placing) {
+        this.view._endPlace(false);
         return true;
       }
       return this.editor.handleKey(e);
@@ -1232,6 +1308,8 @@ export class JacquardUI {
 
     if (this.editor.canPlace) {
       body.append(el("div", "divider"));
+      body.append(el("div", "caption",
+        "Click the cell and drag: ← → category, ↓ pick, release to place."));
       const grid = el("div", "palette");
       for (const kind of KINDS) {
         grid.append(button(kind, () => {

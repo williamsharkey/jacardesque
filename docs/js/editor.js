@@ -54,14 +54,31 @@ export class ScoreEditor {
   }
 
   get canPlace() {
-    const cell = this.cell;
-    if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
-    return this.score.placementLane(this.getCursor()) != null;
+    return this.canPlaceAt(this.getCursor());
   }
 
-  put(kind) {
+  canPlaceAt(point) {
+    if (!point) return false;
+    const cell = this.score.at(point);
+    if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
+    return this.score.placementLane(point) != null;
+  }
+
+  /**
+   * Place from a palette kind string or a place-menu spec
+   * { kind, note?, period?, index?, percent? }.
+   */
+  put(kindOrSpec, atPoint = null) {
+    const spec = typeof kindOrSpec === "string"
+      ? { kind: kindOrSpec }
+      : (kindOrSpec || { kind: "NOTE" });
+
+    if (atPoint) this.setCursor(atPoint);
+    const point = this.getCursor();
+    if (!this.canPlaceAt(point)) return false;
+
     let tile;
-    switch (kind) {
+    switch (spec.kind) {
       case "PABS":
         tile = new ParamTile(true);
         break;
@@ -69,32 +86,44 @@ export class ScoreEditor {
         tile = new ParamTile(false);
         break;
       case "GCYC":
-        tile = new CycleGateTile(4, 1);
+        tile = new CycleGateTile(spec.period ?? 4, spec.index ?? 1);
         break;
       case "GPRB":
-        tile = new ProbGateTile(50);
+        tile = new ProbGateTile(spec.percent ?? 50);
         break;
       case "JUMP":
         tile = new JumpTile();
         break;
-      default:
-        tile = new NoteTile(this._notePitch, this._noteLength);
+      default: {
+        const note = spec.note != null ? spec.note : this._notePitch;
+        const length = spec.length != null ? spec.length : this._noteLength;
+        tile = new NoteTile(note, length);
         break;
+      }
     }
 
-    if (!this.canPlace || !this.score.place(this.getCursor(), tile)) return;
+    if (!this.score.place(point, tile)) return false;
 
     if (tile instanceof JumpTile) {
-      const below = gp(Math.max(1, this.getCursor().x - 4), this.score.height + 1);
+      const below = gp(Math.max(1, point.x - 4), this.score.height + 1);
       this.score.addBranchLane(tile, below, 4);
     }
 
-    if (tile instanceof NoteTile) this.preview(tile.note);
+    if (tile instanceof NoteTile) {
+      this.rememberNote(tile);
+      this.preview(tile.note);
+    }
     this.commit();
+    return true;
   }
 
   placeNote() {
     this.put("NOTE");
+  }
+
+  /** Last note pitch for centering the place-menu Note column. */
+  get lastNotePitch() {
+    return this._notePitch;
   }
 
   delete() {
