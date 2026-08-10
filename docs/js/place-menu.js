@@ -146,25 +146,14 @@ export class PlaceMenu {
 
   /**
    * @returns {{ point, place } | null} commit payload or null if cancelled
+   *
+   * Only commits when the pointer has dragged far enough down to arm an item.
+   * Tap / zero drag / sideways-only = leave the cell empty (cursor only).
    */
   end() {
     if (!this.active) return null;
     const point = this.point;
-    let item = this.currentItem;
-
-    // Pure tap (no meaningful drag): place the category's default item (NOTE centre).
-    if (!this._moved || this.itemIndex < 0) {
-      if (!this._moved) {
-        const cat = this.currentCategory;
-        const di = cat.defaultItem ?? 0;
-        item = cat.items[di];
-      } else {
-        // Dragged sideways only — cancel rather than surprise-place.
-        this.cancel();
-        return null;
-      }
-    }
-
+    const item = this.itemIndex >= 0 ? this.currentItem : null;
     const result = item ? { point, place: item.place } : null;
     this.cancel();
     return result;
@@ -234,10 +223,8 @@ export class PlaceMenu {
     foot.className = "place-menu-foot";
     if (this.itemIndex >= 0) {
       foot.textContent = "release → " + cat.items[this.itemIndex].label;
-    } else if (!this._moved) {
-      foot.textContent = "tap release → " + cat.items[cat.defaultItem ?? 0].label;
     } else {
-      foot.textContent = "drag down to choose";
+      foot.textContent = "drag down to place · release empty";
     }
     this.root.appendChild(foot);
   }

@@ -1309,7 +1309,7 @@ export class JacquardUI {
     if (this.editor.canPlace) {
       body.append(el("div", "divider"));
       body.append(el("div", "caption",
-        "Click the cell and drag: ← → category, ↓ pick, release to place."));
+        "Press cell: ← → category, ↓ pick item, release to place. Short release stays empty."));
       const grid = el("div", "palette");
       for (const kind of KINDS) {
         grid.append(button(kind, () => {
