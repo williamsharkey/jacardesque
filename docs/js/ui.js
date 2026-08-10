@@ -21,12 +21,18 @@ import {
 } from "./core.js";
 import { Style } from "./style.js";
 import { InstrumentNames, InstrumentKeys } from "./instruments.js";
-import { PlaceMenu } from "./place-menu.js";
+import { PlaceMenu, buildGroundObjectCategories } from "./place-menu.js";
 import {
   ensureFxLists,
   findFxAt,
+  findTriggerAt,
+  autoParamDef,
   fxCenter,
   FxTypes,
+  computeFxLiveState,
+  formatAutoShort,
+  formatAutoLong,
+  triggerAdjacentToAnyLane,
 } from "./fx-model.js";
 
 // ---------------------------------------------------------------------------
@@ -123,23 +129,42 @@ const DRAG_DISTANCE = 100; // px of travel for full bar span
 const FINE_DRAG_SCALE = 0.12;
 const DOUBLE_CLICK_MS = 350;
 
-export function createValueBar(range, get, set, settled) {
+/**
+ * Value bar. options:
+ *   onDragOut(value, clientX, clientY) — vertical drag leaves bar → create trigger
+ *   getTicks() — array of values for vertical tick marks (param triggers)
+ */
+export function createValueBar(range, get, set, settled, options = {}) {
   const root = el("div", "value-bar");
   const fill = el("div", "value-bar-fill");
+  const ticks = el("div", "value-bar-ticks");
   const read = el("div", "value-bar-readout");
   const input = el("input", "value-bar-input");
   input.type = "text";
   input.spellcheck = false;
   input.classList.add("hidden");
-  root.append(fill, read, input);
+  root.append(fill, ticks, read, input);
 
   let dragging = false;
   let scrubbed = false;
+  let draggingOut = false;
   let dragOrigin = { x: 0, y: 0 };
   let dragPosition = 0;
   let dragFine = false;
   let lastClick = 0;
   let editing = false;
+  let ghost = null;
+
+  function paintTicks() {
+    ticks.innerHTML = "";
+    const list = options.getTicks?.() || [];
+    for (const v of list) {
+      const pos = toPosition(range, v);
+      const mark = el("div", "value-bar-tick");
+      mark.style.left = (pos * 100) + "%";
+      ticks.append(mark);
+    }
+  }
 
   function paint() {
     if (editing) return;
@@ -159,6 +184,7 @@ export function createValueBar(range, get, set, settled) {
       fill.style.width = (pos * 100) + "%";
     }
     read.textContent = formatRange(range, value);
+    paintTicks();
   }
 
   function round(value) {
@@ -166,6 +192,7 @@ export function createValueBar(range, get, set, settled) {
   }
 
   function applyDrag(e) {
+    if (draggingOut) return;
     const fine = !!e.shiftKey;
     if (fine !== dragFine) {
       dragFine = fine;
@@ -174,6 +201,16 @@ export function createValueBar(range, get, set, settled) {
     }
     const dx = e.clientX - dragOrigin.x;
     const dy = e.clientY - dragOrigin.y;
+    // Vertical leave with drag-out support → param chip mode
+    if (options.onDragOut && Math.abs(dy) > Math.abs(dx) + 10 && Math.abs(dy) > 14) {
+      draggingOut = true;
+      scrubbed = false;
+      ghost = el("div", "dock-note-ghost", formatRange(range, get()));
+      document.body.append(ghost);
+      ghost.style.left = e.clientX + 8 + "px";
+      ghost.style.top = e.clientY + 8 + "px";
+      return;
+    }
     let travel = (dx - dy) / DRAG_DISTANCE;
     if (dragFine) travel *= FINE_DRAG_SCALE;
     if (dx * dx + dy * dy > 16) scrubbed = true;
@@ -188,6 +225,7 @@ export function createValueBar(range, get, set, settled) {
     root.classList.remove("active");
     read.classList.add("hidden");
     fill.classList.add("hidden");
+    ticks.classList.add("hidden");
     input.classList.remove("hidden");
     const value = get();
     input.value = range.scale && range.scale !== 1
@@ -203,6 +241,7 @@ export function createValueBar(range, get, set, settled) {
     input.classList.add("hidden");
     read.classList.remove("hidden");
     fill.classList.remove("hidden");
+    ticks.classList.remove("hidden");
     if (commit) {
       let typed = parseFloat(input.value);
       if (!Number.isNaN(typed)) {
@@ -227,6 +266,7 @@ export function createValueBar(range, get, set, settled) {
     lastClick = now;
     dragging = true;
     scrubbed = false;
+    draggingOut = false;
     dragFine = !!e.shiftKey;
     dragOrigin = { x: e.clientX, y: e.clientY };
     dragPosition = toPosition(range, get());
@@ -236,6 +276,15 @@ export function createValueBar(range, get, set, settled) {
 
   root.addEventListener("pointermove", (e) => {
     if (!dragging) return;
+    if (draggingOut && ghost) {
+      ghost.style.left = e.clientX + 8 + "px";
+      ghost.style.top = e.clientY + 8 + "px";
+      // Opacity hint via optional validator
+      const ok = options.isDragOutValid?.(e.clientX, e.clientY);
+      ghost.classList.toggle("valid", !!ok);
+      ghost.style.opacity = ok ? "1" : "0.5";
+      return;
+    }
     applyDrag(e);
   });
 
@@ -246,7 +295,16 @@ export function createValueBar(range, get, set, settled) {
     try {
       root.releasePointerCapture(e.pointerId);
     } catch (_) { /* ignore */ }
-    // Settled only after a scrub (or immediately if the number never moved as a drag).
+    if (ghost) {
+      ghost.remove();
+      ghost = null;
+    }
+    if (draggingOut) {
+      draggingOut = false;
+      options.onDragOut?.(get(), e.clientX, e.clientY);
+      return;
+    }
+    // Settled only after a scrub
     if (scrubbed) settled?.();
   });
 
@@ -268,10 +326,10 @@ export function createValueBar(range, get, set, settled) {
   return root;
 }
 
-function barRow(label, range, get, set, settled) {
+function barRow(label, range, get, set, settled, options) {
   const row = el("div", "control-row");
   row.append(el("div", "control-label", label));
-  const bar = createValueBar(range, get, set, settled);
+  const bar = createValueBar(range, get, set, settled, options);
   row.append(bar);
   row.sync = () => bar.sync();
   return row;
@@ -341,14 +399,22 @@ export class ScoreView {
     this.onPlaceCommit = null;
     /** currently selected fx module id */
     this.selectedFxId = null;
+    /** currently selected automation node id */
+    this.selectedAutoId = null;
+    /** currently selected path-send route id */
+    this.selectedPathId = null;
     /** (fxId) => void */
     this.onFxSelect = null;
-    /** ({ fxId, paramKey, value, point }) => void */
-    this.onAutoPlaced = null;
-    /** ({ laneIndex, fromStep, toStep, targetFxId }) => void */
-    this.onPathRouted = null;
-    /** ({ fromFxId, toFxId }) => void */
-    this.onFxChained = null;
+    /** (triggerId) => void */
+    this.onAutoSelect = null;
+    /** (pathId) => void */
+    this.onPathSelect = null;
+    /** ({ kind, fxId, paramKey?, value?, point }) => void */
+    this.onTriggerPlaced = null;
+    /** (commit?: boolean) => void */
+    this.onFxParamChanged = null;
+    /** (point) => boolean */
+    this.onIsValidTrigger = null;
 
     this._grabbed = null;
     this._grabOrigin = null;
@@ -360,24 +426,34 @@ export class ScoreView {
     this._dragCount = 1;
     this._placing = false;
     this.placeMenu = null;
-    this._autoDrag = null;
-    this._pathDrag = null;
-    this._fxChainDrag = null;
+    /** Empty-ground morphic shell: { origin, phase:'shell'|'lane'|'object', path, cats, catIndex, itemIndex } */
+    this._groundGesture = null;
+    this._trigDrag = null;
+    this._sliderDrag = null;
     this._panning = false;
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
     this._captureId = null;
     this._loopDrag = null;
     this._anim = 0;
+    /** Live FX state from audio tick (active paths, autos, dimmed pedals). */
+    this.fxLive = null;
+    /** Hover tooltip target: { kind:'auto'|'path'|'fx', id, text, x, y } */
+    this._hoverTip = null;
 
     this._bind();
     if (!ScoreView._sharedAnim) {
       ScoreView._sharedAnim = true;
       const tick = () => {
-        // Bump a global phase so circular tape-loops animate.
+        // Bump a global phase so circular tape-loops + FX pulses animate.
         for (const v of ScoreView._instances || []) {
           v._anim = (v._anim || 0) + 1;
-          if (v.score?.lanes?.some((l) => l.circular)) v.paint();
+          const need =
+            v.score?.lanes?.some((l) => l.circular) ||
+            (v.sequencer?.isPlaying &&
+              ((v.score?.fxTriggers?.length || 0) > 0 ||
+                (v.score?.fxModules?.length || 0) > 0));
+          if (need) v.paint();
         }
         requestAnimationFrame(tick);
       };
@@ -396,6 +472,13 @@ export class ScoreView {
     c.addEventListener("pointermove", (e) => this._pointerMove(e));
     c.addEventListener("pointerup", (e) => this._pointerUp(e));
     c.addEventListener("pointercancel", (e) => this._pointerUp(e));
+    c.addEventListener("pointerleave", () => {
+      if (this._hoverTip) {
+        this._hoverTip = null;
+        this.canvas.title = "";
+        this.paint();
+      }
+    });
     c.addEventListener("lostpointercapture", () => {
       // Safety: never leave pan "stuck" if capture is lost.
       this._panning = false;
@@ -509,54 +592,86 @@ export class ScoreView {
     this.setCursor(point);
     ensureFxLists(this.score);
 
-    // Hit-test automation drag zone on selected FX
-    const autoHit = this._hitAutoZone(pos);
-    if (autoHit) {
+    // FX widget hits: ON/OFF pads, param sliders (scrub or drag-out)
+    const fxHit = this._hitFxWidget(pos);
+    if (fxHit) {
       e.preventDefault();
-      this._autoDrag = { ...autoHit, clientX: e.clientX, clientY: e.clientY };
+      this.selectedFxId = fxHit.fxId;
+      this.selectedAutoId = null;
+      this.selectedPathId = null;
+      this.onFxSelect?.(fxHit.fxId);
+      if (fxHit.kind === "on" || fxHit.kind === "off") {
+        this._trigDrag = {
+          kind: fxHit.kind,
+          fxId: fxHit.fxId,
+          origin: pos,
+          point,
+          insideFx: true,
+        };
+      } else if (fxHit.kind === "slider") {
+        this._sliderDrag = {
+          fxId: fxHit.fxId,
+          paramKey: fxHit.paramKey,
+          bar: fxHit.bar,
+          origin: pos,
+          value: fxHit.value,
+          scrubbing: false,
+          draggingOut: false,
+          point,
+        };
+      }
       this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
 
-    // Drag lane start (dal segno) or end (loop-back)
+    // Trigger pad on ground
+    const trig = findTriggerAt(this.score, point);
+    if (trig) {
+      e.preventDefault();
+      this.selectedAutoId = trig.id;
+      this.selectedFxId = null;
+      this.selectedPathId = null;
+      this.onAutoSelect?.(trig.id);
+      this.paint();
+      return;
+    }
+
+    // Lane start (dal segno) or end (loop-back): click selects, drag reshapes
     const cellHit = this.score.at(point);
     if (cellHit.kind === CellKind.Head || cellHit.kind === CellKind.Term) {
       e.preventDefault();
+      this.selectedAutoId = null;
+      this.selectedFxId = null;
+      this.selectedPathId = null;
+      this.onAutoSelect?.(null);
       this._loopDrag = {
         lane: cellHit.lane,
         which: cellHit.kind === CellKind.Head ? "start" : "end",
         origin: pos,
+        armed: false,
+        hover: null,
+        snap: cellHit.lane.snapshot(),
       };
       this._capture(this.canvas, e.pointerId);
+      this.onCursorMoved?.();
       this.paint();
       return;
     }
 
-    // Hit FX module
+    // Hit FX module body (select only — no chain drag)
     const fx = findFxAt(this.score, point);
     if (fx) {
       e.preventDefault();
       this.selectedFxId = fx.id;
+      this.selectedAutoId = null;
+      this.selectedPathId = null;
       this.onFxSelect?.(fx.id);
-      this._fxChainDrag = { fromFxId: fx.id, origin: pos, moved: false };
-      this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
 
-    // Path send: Alt/⌘-drag from a rail step
     const cell = this.score.at(point);
-    if (cell.kind === CellKind.Rail || cell.kind === CellKind.Tile) {
-      const laneIndex = this.score.lanes.indexOf(cell.lane);
-      if (laneIndex >= 0 && cell.step >= 0 && (e.altKey || e.metaKey)) {
-        e.preventDefault();
-        this._pathDrag = { laneIndex, fromStep: cell.step, origin: pos };
-        this._capture(this.canvas, e.pointerId);
-        this.paint();
-        return;
-      }
-    }
 
     // Double-click still quick-places a note on a free lane cell.
     if (e.detail >= 2 && this.score.placementLane(point)) {
@@ -564,16 +679,39 @@ export class ScoreView {
       return;
     }
 
-    // Lane place menu OR empty-ground menu (new lane / FX / META).
+    // Lane place menu OR empty-ground morphic shell.
     const menuMode = this.menuModeAt?.(point)
       ?? (this.canPlaceAt?.(point)
         ? (this.score.placementLane(point) ? "lane" : "ground")
         : null);
-    if (menuMode) {
+    if (menuMode === "lane") {
       e.preventDefault();
+      this.selectedAutoId = null;
+      this.selectedFxId = null;
+      this.selectedPathId = null;
+      this.onAutoSelect?.(null);
       this._placing = true;
       const centre = this.placeCentreNote?.() ?? 60;
-      this.placeMenu?.begin(menuMode, point, e, centre);
+      this.placeMenu?.begin("lane", point, e, centre);
+      this._capture(this.canvas, e.pointerId);
+      this.paint();
+      return;
+    }
+    if (menuMode === "ground") {
+      e.preventDefault();
+      this.selectedAutoId = null;
+      this.selectedFxId = null;
+      this.selectedPathId = null;
+      this.onAutoSelect?.(null);
+      this._groundGesture = {
+        origin: { x: point.x, y: point.y },
+        phase: "shell", // shell | lane | object
+        path: [{ x: point.x, y: point.y }],
+        cats: buildGroundObjectCategories(),
+        catIndex: 0,
+        itemIndex: -1,
+        hover: { x: point.x, y: point.y },
+      };
       this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
@@ -583,6 +721,10 @@ export class ScoreView {
     // only after a movement threshold (see _pointerMove).
     if (cell.kind !== CellKind.Tile && cell.kind !== CellKind.Head) {
       e.preventDefault();
+      this.selectedAutoId = null;
+      this.selectedFxId = null;
+      this.selectedPathId = null;
+      this.onAutoSelect?.(null);
       this._panning = true;
       this._panArmed = false;
       this._panOrigin = {
@@ -596,6 +738,10 @@ export class ScoreView {
     }
 
     e.preventDefault();
+    this.selectedAutoId = null;
+    this.selectedFxId = null;
+    this.selectedPathId = null;
+    this.onAutoSelect?.(null);
     this._grabbed = cell;
     this._grabOrigin = pos;
     this._dragging = false;
@@ -603,30 +749,79 @@ export class ScoreView {
   }
 
   _pointerMove(e) {
-    if (this._loopDrag) {
-      const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
-      this._loopDrag.hover = point;
+    // Hover tooltip when idle (no drag gesture)
+    if (
+      !this._loopDrag && !this._trigDrag && !this._sliderDrag &&
+      !this._placing && !this._groundGesture && !this._panning && !this._grabbed
+    ) {
+      this._updateHoverTip(this.localPoint(e));
+    }
+
+    if (this._groundGesture) {
+      this._updateGroundGesture(e);
       this.paint();
       return;
     }
-    if (this._autoDrag) {
-      this._autoDrag.clientX = e.clientX;
-      this._autoDrag.clientY = e.clientY;
-      this._autoDrag.point = Style.cellAt(this.localPoint(e));
-      this.paint();
-      return;
-    }
-    if (this._pathDrag) {
-      this._pathDrag.point = Style.cellAt(this.localPoint(e));
-      this.paint();
-      return;
-    }
-    if (this._fxChainDrag) {
+
+    if (this._trigDrag) {
       const pos = this.localPoint(e);
-      if (Math.hypot(pos.x - this._fxChainDrag.origin.x, pos.y - this._fxChainDrag.origin.y) > 6) {
-        this._fxChainDrag.moved = true;
+      const point = Style.cellAt(pos);
+      this._trigDrag.point = point;
+      const mod = this.score.fxModules.find((m) => m.id === this._trigDrag.fxId);
+      this._trigDrag.insideFx = mod ? fxOccupies(mod, point) : false;
+      this.paint();
+      return;
+    }
+
+    if (this._sliderDrag) {
+      const pos = this.localPoint(e);
+      const d = this._sliderDrag;
+      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
+      const mod = this.score.fxModules.find((m) => m.id === d.fxId);
+      const point = Style.cellAt(pos);
+      d.point = point;
+      const inside = mod ? fxOccupies(mod, point) : false;
+
+      if (!d.draggingOut && !d.scrubbing) {
+        // Vertical leave → drag-out trigger; horizontal → scrub
+        if (dist > 6) {
+          const dy = Math.abs(pos.y - d.origin.y);
+          const dx = Math.abs(pos.x - d.origin.x);
+          if (dy > dx + 4 && !inside) {
+            d.draggingOut = true;
+          } else {
+            d.scrubbing = true;
+          }
+        }
       }
-      this._fxChainDrag.point = Style.cellAt(pos);
+      if (d.scrubbing && d.bar) {
+        const t = Math.min(1, Math.max(0, (pos.x - d.bar.x) / (d.bar.w || 1)));
+        const def = FxTypes[mod?.type];
+        const p = def?.params?.find((x) => x.key === d.paramKey);
+        if (mod && p) {
+          mod.params[d.paramKey] = p.min + t * (p.max - p.min);
+          this.onFxParamChanged?.();
+        }
+      }
+      if (d.draggingOut) {
+        d.insideFx = inside;
+      }
+      this.paint();
+      return;
+    }
+
+    if (this._loopDrag) {
+      const pos = this.localPoint(e);
+      if (!this._loopDrag.armed) {
+        if (Math.hypot(pos.x - this._loopDrag.origin.x, pos.y - this._loopDrag.origin.y) < 6) {
+          return;
+        }
+        this._loopDrag.armed = true;
+      }
+      const point = this.score.wrap(Style.cellAt(pos));
+      this._loopDrag.hover = point;
+      // Live update start/end + active window every move
+      this._applyLoopDragPreview();
       this.paint();
       return;
     }
@@ -673,54 +868,55 @@ export class ScoreView {
     this._releaseCapture();
 
     if (this._loopDrag) {
-      const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
       const d = this._loopDrag;
       this._loopDrag = null;
-      if (d.which === "end") this.score.reshapeLaneEnd(d.lane, point);
-      else this.score.reshapeLaneStart(d.lane, point);
-      this.onLoopReshaped?.();
+      if (d.armed && d.hover) {
+        // Restore original then hard-commit (truncate inactive / keep grow)
+        if (d.snap) d.lane.restore(d.snap);
+        this.score.commitReshape(d.lane, d.which, d.hover);
+        this.onLoopReshaped?.();
+      } else if (d.snap) {
+        // Click without drag — restore any accidental preview
+        d.lane.restore(d.snap);
+      }
       this.paint();
       return;
     }
-    if (this._autoDrag) {
-      const point = Style.cellAt(this.localPoint(e));
-      const d = this._autoDrag;
-      this._autoDrag = null;
-      this.onAutoPlaced?.({
-        fxId: d.fxId,
-        paramKey: d.paramKey,
-        value: d.value,
-        point,
-      });
-      this.paint();
-      return;
-    }
-    if (this._pathDrag) {
-      const point = Style.cellAt(this.localPoint(e));
-      const fx = findFxAt(this.score, point);
-      const d = this._pathDrag;
-      this._pathDrag = null;
-      if (fx) {
-        const toStep = Math.max(d.fromStep, d.fromStep + 3);
-        this.onPathRouted?.({
-          laneIndex: d.laneIndex,
-          fromStep: d.fromStep,
-          toStep,
-          targetFxId: fx.id,
+    if (this._trigDrag) {
+      const d = this._trigDrag;
+      this._trigDrag = null;
+      // Cancel if dropped back on the effect body
+      if (!d.insideFx && d.point) {
+        this.onTriggerPlaced?.({
+          kind: d.kind,
+          fxId: d.fxId,
+          point: d.point,
         });
       }
       this.paint();
       return;
     }
-    if (this._fxChainDrag) {
-      const d = this._fxChainDrag;
-      const point = Style.cellAt(this.localPoint(e));
-      const target = findFxAt(this.score, point);
-      this._fxChainDrag = null;
-      if (d.moved && target && target.id !== d.fromFxId) {
-        this.onFxChained?.({ fromFxId: d.fromFxId, toFxId: target.id });
+    if (this._sliderDrag) {
+      const d = this._sliderDrag;
+      this._sliderDrag = null;
+      if (d.draggingOut && !d.insideFx && d.point) {
+        const mod = this.score.fxModules.find((m) => m.id === d.fxId);
+        const val = mod?.params?.[d.paramKey] ?? d.value;
+        this.onTriggerPlaced?.({
+          kind: "param",
+          fxId: d.fxId,
+          paramKey: d.paramKey,
+          value: val,
+          point: d.point,
+        });
+      } else if (d.scrubbing) {
+        this.onFxParamChanged?.(true);
       }
       this.paint();
+      return;
+    }
+    if (this._groundGesture) {
+      this._endGroundGesture(true);
       return;
     }
     if (this._placing) {
@@ -754,15 +950,167 @@ export class ScoreView {
     this.paint();
   }
 
+  /** Apply live start/end reshape preview from current loop-drag hover. */
+  _applyLoopDragPreview() {
+    const d = this._loopDrag;
+    if (!d?.lane || !d.hover || !d.snap) return;
+    d.lane.restore(d.snap);
+    if (d.which === "end") this.score.previewReshapeEnd(d.lane, d.hover);
+    else this.score.previewReshapeStart(d.lane, d.hover);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Empty-ground morphic shell (create lane L/U/R · create object ↓)
+  // ---------------------------------------------------------------------------
+
+  _updateGroundGesture(e) {
+    const g = this._groundGesture;
+    if (!g || !this.score) return;
+    const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
+    g.hover = point;
+    const o = g.origin;
+    const dx = point.x - o.x;
+    const dy = point.y - o.y;
+    // Toroidal-shortest for direction? Use raw for shell; path uses wrap cells.
+
+    if (g.phase === "shell") {
+      // Commit direction once we leave the origin cell
+      if (point.x === o.x && point.y === o.y) return;
+      // Down into the row below → object menu (locked for this gesture)
+      if (dy > 0 && Math.abs(dy) >= Math.abs(dx)) {
+        g.phase = "object";
+        g.catIndex = 0;
+        g.itemIndex = -1;
+        this._syncGroundObjectSelection(g, point);
+        return;
+      }
+      // Left / up / right → lane path (locked for this gesture)
+      if (dx !== 0 || dy < 0) {
+        g.phase = "lane";
+        g.path = [{ x: o.x, y: o.y }];
+        this._extendGroundLanePath(g, point);
+        return;
+      }
+    }
+
+    if (g.phase === "lane") {
+      this._extendGroundLanePath(g, point);
+      return;
+    }
+
+    if (g.phase === "object") {
+      this._syncGroundObjectSelection(g, point);
+    }
+  }
+
+  _extendGroundLanePath(g, target) {
+    if (!this.score) return;
+    target = this.score.wrap(target);
+    let last = g.path[g.path.length - 1];
+    // Already at end
+    if (last.x === target.x && last.y === target.y) return;
+
+    // Walk Manhattan toward target, appending free cells (or cells already in path)
+    let guard = 0;
+    const max = (this.score.gridW || 32) * (this.score.gridH || 16);
+    while ((last.x !== target.x || last.y !== target.y) && guard++ < max) {
+      // Prefer horizontal then vertical (toroidal shortest)
+      const td = (() => {
+        // simple non-toroidal step first for freeform feel
+        let sx = Math.sign(target.x - last.x);
+        let sy = Math.sign(target.y - last.y);
+        if (sx === 0 && sy === 0) return null;
+        // prefer larger delta axis
+        if (Math.abs(target.x - last.x) >= Math.abs(target.y - last.y) && sx !== 0) {
+          return { x: last.x + sx, y: last.y };
+        }
+        if (sy !== 0) return { x: last.x, y: last.y + sy };
+        return { x: last.x + sx, y: last.y };
+      })();
+      if (!td) break;
+      const np = this.score.wrap(gp(td.x, td.y));
+      // Backtrack onto path: trim to that cell
+      const back = g.path.findIndex((p) => p.x === np.x && p.y === np.y);
+      if (back >= 0) {
+        g.path = g.path.slice(0, back + 1);
+        last = g.path[g.path.length - 1];
+        continue;
+      }
+      // Blocked by existing content (except free ground)
+      if (!this.score.isFree(np)) break;
+      g.path.push({ x: np.x, y: np.y });
+      last = np;
+    }
+  }
+
+  _syncGroundObjectSelection(g, point) {
+    // Menu is centered on the cell one row below origin
+    const ox = g.origin.x;
+    const menuY = g.origin.y + 1;
+    const cats = g.cats;
+    // Category row at menuY: two cells around ox (FX leftish, META rightish)
+    // Horizontal: relative to ox → cat index
+    const relX = point.x - ox;
+    if (point.y <= g.origin.y) {
+      // Still on origin row or above → dismiss band
+      g.itemIndex = -1;
+      g.catIndex = Math.min(cats.length - 1, Math.max(0, relX <= 0 ? 0 : 1));
+      return;
+    }
+    // Category from horizontal offset
+    let cat = relX <= 0 ? 0 : 1;
+    cat = Math.min(cats.length - 1, Math.max(0, cat));
+    g.catIndex = cat;
+    // Items start at menuY + 1 (two rows below origin)
+    const itemRow = point.y - (menuY + 1);
+    if (itemRow < 0) {
+      g.itemIndex = -1; // on category band — not yet armed
+    } else {
+      const items = cats[cat].items;
+      g.itemIndex = Math.min(items.length - 1, Math.max(0, itemRow));
+    }
+  }
+
+  _endGroundGesture(commit) {
+    const g = this._groundGesture;
+    this._groundGesture = null;
+    if (!g || !commit) {
+      this.paint();
+      return;
+    }
+
+    if (g.phase === "lane" && g.path.length >= 1) {
+      this.onPlaceCommit?.({
+        point: g.origin,
+        place: { kind: "LANE_PATH", path: g.path.slice() },
+        mode: "ground",
+      });
+    } else if (g.phase === "object" && g.itemIndex >= 0) {
+      const item = g.cats[g.catIndex]?.items[g.itemIndex];
+      if (item) {
+        this.onPlaceCommit?.({
+          point: g.origin,
+          place: item.place,
+          mode: "ground",
+        });
+      }
+    }
+    // shell-only click (no commit direction) → dismiss
+    this.paint();
+  }
+
   /** Esc / cancel: abort menus and all drag modes. */
   cancelGestures() {
     this._releaseCapture();
     this._placing = false;
     this.placeMenu?.cancel();
+    this._groundGesture = null;
+    if (this._loopDrag?.snap) {
+      this._loopDrag.lane.restore(this._loopDrag.snap);
+    }
     this._loopDrag = null;
-    this._autoDrag = null;
-    this._pathDrag = null;
-    this._fxChainDrag = null;
+    this._trigDrag = null;
+    this._sliderDrag = null;
     this._panning = false;
     this._panArmed = false;
     this._endDrag();
@@ -827,212 +1175,517 @@ export class ScoreView {
     this._drawDropCells(ctx);
     if (this._dragging && this._grabbed) this._drawGhosts(ctx);
     this._drawGestureGhosts(ctx);
+    this._drawGroundShell(ctx);
   }
 
-  _hitAutoZone(pos) {
-    if (!this.selectedFxId || !this.score) return null;
-    ensureFxLists(this.score);
-    const mod = this.score.fxModules.find((m) => m.id === this.selectedFxId);
-    if (!mod) return null;
-    const def = FxTypes[mod.type];
-    if (!def) return null;
-    const origin = Style.cellOrigin({ x: mod.x, y: mod.y });
-    const pad = 6;
-    let y = origin.y + 22;
-    for (const p of def.params) {
-      const zone = {
-        x: origin.x + mod.w * Style.StrideX - Style.Gap - 18,
-        y,
-        w: 14,
-        h: 14,
-      };
-      if (pos.x >= zone.x && pos.x <= zone.x + zone.w &&
-          pos.y >= zone.y && pos.y <= zone.y + zone.h) {
-        return {
-          fxId: mod.id,
-          paramKey: p.key,
-          value: mod.params[p.key] ?? p.def,
-        };
+  /**
+   * Morphic ground shell: L/U/R = create lane, one row below = create object.
+   * Drawn on the grid at 0.8 opacity so the gesture is integral to the plane.
+   */
+  _drawGroundShell(ctx) {
+    const g = this._groundGesture;
+    if (!g) return;
+    const o = g.origin;
+    const shellAlpha = 0.8;
+
+    // Origin cell highlight
+    {
+      const r = Style.cellRect(o);
+      ctx.fillStyle = withAlpha("#f2f2ee", 0.12);
+      roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+      ctx.fill();
+      ctx.strokeStyle = withAlpha("#f2f2ee", 0.55);
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+      ctx.stroke();
+    }
+
+    // Create-lane shells: left, above, right (while still deciding or as legend)
+    if (g.phase === "shell" || g.phase === "lane") {
+      const laneCells = [
+        { x: o.x - 1, y: o.y },
+        { x: o.x, y: o.y - 1 },
+        { x: o.x + 1, y: o.y },
+      ];
+      for (const c of laneCells) {
+        const p = this.score.wrap(gp(c.x, c.y));
+        // Don't paint shell on occupied cells
+        if (!this.score.isFree(p) && !(p.x === o.x && p.y === o.y)) continue;
+        const r = Style.cellRect(p);
+        const hot = g.phase === "lane" ||
+          (g.hover && g.hover.x === p.x && g.hover.y === p.y);
+        ctx.globalAlpha = shellAlpha;
+        ctx.fillStyle = hot ? withAlpha("#6ee7b7", 0.35) : withAlpha("#34d399", 0.18);
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = withAlpha("#6ee7b7", hot ? 0.95 : 0.55);
+        ctx.lineWidth = hot ? 1.5 : 1;
+        roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.fillStyle = withAlpha("#d1fae5", 0.95);
+        ctx.font = "600 8px system-ui,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("create", r.x + r.w / 2, r.y + r.h / 2 - 5);
+        ctx.fillText("lane", r.x + r.w / 2, r.y + r.h / 2 + 6);
+        ctx.globalAlpha = 1;
       }
-      y += 16;
+    }
+
+    // Lane path preview
+    if (g.phase === "lane" && g.path.length) {
+      ctx.strokeStyle = withAlpha("#6ee7b7", 0.9);
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      for (let i = 0; i < g.path.length; i++) {
+        const c = Style.cellCenter(g.path[i]);
+        if (i === 0) ctx.moveTo(c.x, c.y);
+        else ctx.lineTo(c.x, c.y);
+      }
+      ctx.stroke();
+      for (let i = 0; i < g.path.length; i++) {
+        const r = Style.cellRect(g.path[i]);
+        ctx.fillStyle = withAlpha("#34d399", i === 0 ? 0.35 : 0.22);
+        roundRect(ctx, r.x + 2, r.y + 2, r.w - 4, r.h - 4, 4);
+        ctx.fill();
+        ctx.fillStyle = withAlpha("#ecfdf5", 0.95);
+        ctx.font = "700 9px system-ui,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(i), r.x + r.w / 2, r.y + r.h / 2);
+      }
+      // Foot hint
+      const last = g.path[g.path.length - 1];
+      const lr = Style.cellRect(last);
+      ctx.fillStyle = withAlpha("#a7f3d0", 0.9);
+      ctx.font = "600 9px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText("release → new lane (" + g.path.length + " steps)", lr.x, lr.y + lr.h + 4);
+    }
+
+    // Create-object shell: centered one row below origin
+    if (g.phase === "shell" || g.phase === "object") {
+      const menuY = o.y + 1;
+      const cats = g.cats;
+      // Category band spans roughly 3 cells centered under origin
+      for (let i = 0; i < cats.length; i++) {
+        const cx = o.x + (i === 0 ? -1 : 1);
+        const p = this.score.wrap(gp(cx, menuY));
+        // For single-cell center option when 2 cats: also paint middle
+        const r = Style.cellRect(p);
+        const catHot = g.phase === "object" && g.catIndex === i;
+        ctx.globalAlpha = shellAlpha;
+        ctx.fillStyle = catHot ? withAlpha("#c4b5fd", 0.4) : withAlpha("#8b7cf7", 0.2);
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = withAlpha("#c4b5fd", catHot ? 0.95 : 0.55);
+        ctx.lineWidth = catHot ? 1.5 : 1;
+        roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.fillStyle = withAlpha("#ede9fe", 0.95);
+        ctx.font = "700 9px system-ui,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(cats[i].label, r.x + r.w / 2, r.y + r.h / 2 - 5);
+        if (g.phase === "shell") {
+          ctx.font = "600 7px system-ui,sans-serif";
+          ctx.fillText("object", r.x + r.w / 2, r.y + r.h / 2 + 6);
+        }
+        ctx.globalAlpha = 1;
+      }
+      // Center cell under origin: "create object" label in shell phase
+      {
+        const p = this.score.wrap(gp(o.x, menuY));
+        const r = Style.cellRect(p);
+        ctx.globalAlpha = shellAlpha;
+        ctx.fillStyle = withAlpha("#a78bfa", g.phase === "object" ? 0.28 : 0.16);
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = withAlpha("#ddd6fe", 0.6);
+        ctx.lineWidth = 1;
+        roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.fillStyle = withAlpha("#f5f3ff", 0.95);
+        ctx.font = "600 8px system-ui,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("create", r.x + r.w / 2, r.y + r.h / 2 - 5);
+        ctx.fillText("object", r.x + r.w / 2, r.y + r.h / 2 + 6);
+        ctx.globalAlpha = 1;
+      }
+
+      // Object items cascade below category row when in object phase
+      if (g.phase === "object") {
+        const cat = cats[g.catIndex];
+        const colX = o.x + (g.catIndex === 0 ? -1 : 1);
+        for (let i = 0; i < cat.items.length; i++) {
+          const p = this.score.wrap(gp(colX, menuY + 1 + i));
+          const r = Style.cellRect(p);
+          const armed = g.itemIndex === i;
+          ctx.globalAlpha = shellAlpha;
+          ctx.fillStyle = armed ? withAlpha("#fde68a", 0.45) : withAlpha("#3f3f46", 0.55);
+          roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+          ctx.fill();
+          ctx.strokeStyle = armed ? withAlpha("#fbbf24", 0.95) : withAlpha("#a1a1aa", 0.4);
+          ctx.lineWidth = armed ? 1.5 : 1;
+          roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+          ctx.stroke();
+          ctx.fillStyle = armed ? "#1c1917" : withAlpha("#e4e4e7", 0.95);
+          ctx.font = "600 8px system-ui,sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const label = cat.items[i].label;
+          ctx.fillText(label.length > 8 ? label.slice(0, 7) + "…" : label, r.x + r.w / 2, r.y + r.h / 2);
+          ctx.globalAlpha = 1;
+        }
+        if (g.itemIndex >= 0) {
+          const item = cat.items[g.itemIndex];
+          const tip = Style.cellRect(this.score.wrap(gp(colX, menuY + 1 + g.itemIndex)));
+          ctx.fillStyle = withAlpha("#fde68a", 0.95);
+          ctx.font = "600 9px system-ui,sans-serif";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ctx.fillText("release → " + item.label, tip.x, tip.y + tip.h + 3);
+        } else {
+          const tip = Style.cellRect(this.score.wrap(gp(o.x, menuY)));
+          ctx.fillStyle = withAlpha("#c4b5fd", 0.9);
+          ctx.font = "600 9px system-ui,sans-serif";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ctx.fillText("↓ items · release on origin = dismiss", tip.x, tip.y + tip.h + 3);
+        }
+      }
+    }
+  }
+
+  /** Hit ON/OFF pads or param sliders on any FX module. */
+  _hitFxWidget(pos) {
+    if (!this.score) return null;
+    ensureFxLists(this.score);
+    for (let i = this.score.fxModules.length - 1; i >= 0; i--) {
+      const mod = this.score.fxModules[i];
+      const def = FxTypes[mod.type] || FxTypes.delay;
+      if (def.patternOp) continue;
+      const o = Style.cellOrigin({ x: mod.x, y: mod.y });
+      const w = mod.w * Style.StrideX - Style.Gap;
+      const h = mod.h * Style.StrideY - Style.Gap;
+      // ON pad top-left
+      const onR = { x: o.x + 4, y: o.y + 3, w: 22, h: 14 };
+      if (pos.x >= onR.x && pos.x <= onR.x + onR.w && pos.y >= onR.y && pos.y <= onR.y + onR.h) {
+        return { kind: "on", fxId: mod.id };
+      }
+      // OFF pad top-right
+      const offR = { x: o.x + w - 26, y: o.y + 3, w: 22, h: 14 };
+      if (pos.x >= offR.x && pos.x <= offR.x + offR.w && pos.y >= offR.y && pos.y <= offR.y + offR.h) {
+        return { kind: "off", fxId: mod.id };
+      }
+      // Param sliders
+      let y = o.y + 22;
+      for (const p of def.params) {
+        const bar = { x: o.x + 6, y, w: w - 12, h: 12 };
+        if (pos.x >= bar.x && pos.x <= bar.x + bar.w && pos.y >= bar.y && pos.y <= bar.y + bar.h) {
+          const t = Math.min(1, Math.max(0, (pos.x - bar.x) / bar.w));
+          const value = p.min + t * (p.max - p.min);
+          return {
+            kind: "slider",
+            fxId: mod.id,
+            paramKey: p.key,
+            value: mod.params[p.key] ?? p.def,
+            bar,
+            hitValue: value,
+          };
+        }
+        y += 16;
+      }
     }
     return null;
+  }
+
+  /** Resolve live FX state (from audio tick, or compute fallback for paint). */
+  _fxLiveState() {
+    if (this.fxLive) return this.fxLive;
+    if (!this.score) return null;
+    const playing = !!this.sequencer?.isPlaying;
+    return computeFxLiveState(
+      this.score,
+      this.sequencer?.runners,
+      playing,
+      null,
+      null,
+    );
+  }
+
+  _updateHoverTip(pos) {
+    if (!this.score) return;
+    ensureFxLists(this.score);
+    const point = Style.cellAt(pos);
+    let tip = null;
+
+    const trig = findTriggerAt(this.score, point);
+    if (trig) {
+      tip = {
+        kind: "trig",
+        id: trig.id,
+        text: formatAutoLong(this.score, trig),
+        x: pos.x,
+        y: pos.y,
+      };
+    } else {
+      const fx = findFxAt(this.score, point);
+      if (fx) {
+        const def = FxTypes[fx.type] || FxTypes.delay;
+        const status = def.patternOp
+          ? ""
+          : (fx.on ? " · ON (insert)" : " · off (bypass)");
+        tip = {
+          kind: "fx",
+          id: fx.id,
+          text: def.name + status + " — drag ON/OFF pads or a slider value onto the grid",
+          x: pos.x,
+          y: pos.y,
+        };
+      }
+    }
+
+    const prev = this._hoverTip;
+    const same =
+      (!prev && !tip) ||
+      (prev && tip && prev.kind === tip.kind && prev.id === tip.id && prev.text === tip.text);
+    this._hoverTip = tip;
+    this.canvas.title = tip?.text || "";
+    if (!same) this.paint();
   }
 
   _drawFxWorld(ctx) {
     if (!this.score) return;
     ensureFxLists(this.score);
+    const live = this._fxLiveState();
+    const phase = (this._anim || 0) * 0.12;
+    const pulse = 0.55 + 0.45 * Math.sin(phase);
 
-    // Path routes (lavender pull-off cables)
-    for (const r of this.score.pathRoutes) {
-      const lane = this.score.lanes[r.laneIndex];
-      const mod = this.score.fxModules.find((m) => m.id === r.targetFxId);
-      if (!lane || !mod) continue;
-      const a = Style.cellCenter(lane.cellPoint(r.fromStep, 0));
-      const b = Style.cellCenter(lane.cellPoint(Math.min(r.toStep, lane.steps.length - 1), 0));
-      const c = Style.cellCenter(fxCenter(mod));
-      ctx.strokeStyle = withAlpha("#a78bfa", 0.75);
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y + 6);
-      ctx.quadraticCurveTo((a.x + c.x) / 2, Math.max(a.y, c.y) + 40, c.x, c.y);
-      ctx.stroke();
-      // window span on rail
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y + 10);
-      ctx.lineTo(b.x, b.y + 10);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // FX chains
-    for (const r of this.score.fxRoutes) {
-      const a = this.score.fxModules.find((m) => m.id === r.fromFxId);
-      const b = this.score.fxModules.find((m) => m.id === r.toFxId);
-      if (!a || !b) continue;
-      const pa = Style.cellCenter(fxCenter(a));
-      const pb = Style.cellCenter(fxCenter(b));
-      ctx.strokeStyle = withAlpha("#34d399", 0.8);
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(pa.x, pa.y);
-      ctx.lineTo(pb.x, pb.y);
-      ctx.stroke();
-    }
-
-    // Modules
+    // Modules first
     for (const mod of this.score.fxModules) {
-      this._drawFxModule(ctx, mod, mod.id === this.selectedFxId);
+      this._drawFxModule(ctx, mod, mod.id === this.selectedFxId, live, pulse);
     }
 
-    // Automation nodes
-    for (const auto of this.score.autoNodes) {
-      const o = Style.cellOrigin(auto);
-      const cx = o.x + Style.CellWidth / 2;
-      const cy = o.y + Style.CellHeight / 2;
-      ctx.fillStyle = "#fbbf24";
-      ctx.strokeStyle = "#f59e0b";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - 8);
-      ctx.lineTo(cx + 8, cy);
-      ctx.lineTo(cx, cy + 8);
-      ctx.lineTo(cx - 8, cy);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#1c1917";
-      ctx.font = "600 8px system-ui,sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(auto.paramKey.slice(0, 3), cx, cy);
-      // cable to FX
-      const mod = this.score.fxModules.find((m) => m.id === auto.targetFxId);
-      if (mod) {
-        const t = Style.cellCenter(fxCenter(mod));
-        ctx.strokeStyle = withAlpha("#fbbf24", 0.45);
-        ctx.setLineDash([2, 2]);
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(t.x, t.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
+    // Adjacency triggers (ON / OFF / param)
+    for (const trig of this.score.fxTriggers) {
+      this._drawTrigger(ctx, trig, live, pulse);
+    }
+
+    if (this._hoverTip?.text) {
+      this._drawHoverTip(ctx, this._hoverTip);
     }
   }
 
-  _drawFxModule(ctx, mod, selected) {
+  _drawTrigger(ctx, trig, live, pulse) {
+    const selected = trig.id === this.selectedAutoId;
+    const firing = !!live?.activeTrigIds?.has(trig.id);
+    const near = triggerAdjacentToAnyLane(this.score, trig);
+    const alpha = near ? 1 : 0.5;
+    const o = Style.cellOrigin(trig);
+    const cx = o.x + Style.CellWidth / 2;
+    const cy = o.y + Style.CellHeight / 2;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    let fill = "#a3a3a3";
+    let label = "?";
+    if (trig.kind === "on") {
+      fill = firing ? "#86efac" : "#4ade80";
+      label = "ON";
+    } else if (trig.kind === "off") {
+      fill = firing ? "#fca5a5" : "#f87171";
+      label = "OFF";
+    } else if (trig.kind === "chan") {
+      // Cyan: instrument / channel param
+      fill = firing ? "#a5f3fc" : "#22d3ee";
+      label = formatAutoShort(trig.paramKey, trig.value);
+    } else {
+      // Gold: FX param
+      fill = firing ? "#fde68a" : "#fbbf24";
+      label = formatAutoShort(trig.paramKey, trig.value);
+    }
+
+    if (firing) {
+      ctx.shadowColor = fill;
+      ctx.shadowBlur = 10 + 6 * pulse;
+    }
+    const r = Style.cellRect(trig);
+    roundRect(ctx, r.x + 3, r.y + 5, r.w - 6, r.h - 10, 4);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = selected ? "#fff" : withAlpha("#000", 0.35);
+    ctx.lineWidth = selected ? 1.5 : 1;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = "#1c1917";
+    ctx.font = "700 " + (label.length > 3 ? "8" : "9") + "px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, cx, cy);
+    ctx.restore();
+  }
+
+  _drawFxModule(ctx, mod, selected, live, pulse) {
     const o = Style.cellOrigin({ x: mod.x, y: mod.y });
     const w = mod.w * Style.StrideX - Style.Gap;
     const h = mod.h * Style.StrideY - Style.Gap;
     const def = FxTypes[mod.type] || FxTypes.delay;
     const isPat = !!def.patternOp;
+    const on = !!mod.on;
+    const patternOn = !!live?.activePatternIds?.has(mod.id);
+    const dim = !isPat && !on;
+
+    ctx.save();
+    ctx.globalAlpha = dim ? 0.5 : 1;
+
     ctx.fillStyle = selected
       ? (isPat ? "#1a2e24" : "#2a2438")
       : (isPat ? "#152018" : "#1e1e28");
-    ctx.strokeStyle = selected
+    ctx.strokeStyle = (on || patternOn || selected)
       ? (isPat ? "#6ee7b7" : "#c4b5fd")
       : (isPat ? "#3f6b55" : "#6d6a7a");
-    ctx.lineWidth = selected ? 1.5 : 1;
+    ctx.lineWidth = selected || on ? 1.8 : 1;
+    if (on || patternOn) {
+      ctx.shadowColor = isPat ? "#34d399" : "#a78bfa";
+      ctx.shadowBlur = 8 + 4 * pulse;
+    }
     roundRect(ctx, o.x, o.y, w, h, 6);
     ctx.fill();
     ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    if (!isPat) {
+      // ON pad
+      ctx.fillStyle = on ? "#4ade80" : "#3f3f46";
+      roundRect(ctx, o.x + 4, o.y + 3, 22, 14, 3);
+      ctx.fill();
+      ctx.fillStyle = on ? "#14532d" : "#a1a1aa";
+      ctx.font = "700 8px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("ON", o.x + 15, o.y + 10);
+      // OFF pad
+      ctx.fillStyle = !on ? "#f87171" : "#3f3f46";
+      roundRect(ctx, o.x + w - 26, o.y + 3, 22, 14, 3);
+      ctx.fill();
+      ctx.fillStyle = !on ? "#7f1d1d" : "#a1a1aa";
+      ctx.fillText("OFF", o.x + w - 15, o.y + 10);
+    }
 
     ctx.fillStyle = isPat ? "#d1fae5" : "#e9e5ff";
     ctx.font = "700 11px system-ui,sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(def.label, o.x + 6, o.y + 5);
+    ctx.fillText(def.label, o.x + (isPat ? 6 : 30), o.y + 4);
     if (mod.type === "patgo") {
       ctx.font = "600 10px system-ui,sans-serif";
       ctx.fillText("#" + ((mod.params.n | 0) + 1), o.x + 6, o.y + 20);
     }
 
+    const liveP = live?.liveParams?.get(mod.id) || mod.params;
+    // Marker ticks for every param trigger of this module
+    const ticksByParam = new Map();
+    for (const t of this.score.fxTriggers) {
+      if (t.targetFxId !== mod.id || t.kind !== "param") continue;
+      if (!ticksByParam.has(t.paramKey)) ticksByParam.set(t.paramKey, []);
+      ticksByParam.get(t.paramKey).push(t.value);
+    }
+
     let y = o.y + 22;
+    const hover = this._hoverTip?.kind === "fx" && this._hoverTip?.id === mod.id;
     for (const p of def.params) {
-      const val = mod.params[p.key] ?? p.def;
+      const val = liveP[p.key] ?? mod.params[p.key] ?? p.def;
       const t = (val - p.min) / (p.max - p.min || 1);
-      // bar
+      const barW = w - 12;
+      // Hover lift
+      const lift = hover ? 1 : 0;
       ctx.fillStyle = "#2f2f3a";
-      ctx.fillRect(o.x + 6, y, w - 28, 10);
+      ctx.fillRect(o.x + 6, y - lift, barW, 10 + lift);
       ctx.fillStyle = "#8b7cf7";
-      ctx.fillRect(o.x + 6, y, Math.max(2, (w - 28) * Math.min(1, Math.max(0, t))), 10);
-      ctx.fillStyle = "#a1a1aa";
+      ctx.fillRect(o.x + 6, y - lift, Math.max(2, barW * Math.min(1, Math.max(0, t))), 10 + lift);
+      // Tick marks for dragged-off values
+      const ticks = ticksByParam.get(p.key) || [];
+      for (const tv of ticks) {
+        const tt = (tv - p.min) / (p.max - p.min || 1);
+        const tx = o.x + 6 + barW * Math.min(1, Math.max(0, tt));
+        ctx.strokeStyle = "#fde68a";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(tx, y - 1 - lift);
+        ctx.lineTo(tx, y + 11 + lift);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#d4d4d8";
       ctx.font = "600 8px system-ui,sans-serif";
-      ctx.fillText(p.label, o.x + 8, y);
-      // auto drag zone (diamond nub)
-      const zx = o.x + w - 16;
-      const zy = y + 5;
-      ctx.fillStyle = selected ? "#fbbf24" : "#52525b";
-      ctx.beginPath();
-      ctx.moveTo(zx, zy - 5);
-      ctx.lineTo(zx + 5, zy);
-      ctx.lineTo(zx, zy + 5);
-      ctx.lineTo(zx - 5, zy);
-      ctx.closePath();
-      ctx.fill();
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(p.label + " " + formatAutoShort(p.key, val), o.x + 8, y - lift);
       y += 16;
     }
+    ctx.restore();
+  }
+
+  _drawHoverTip(ctx, tip) {
+    const pad = 6;
+    ctx.font = "600 11px system-ui,sans-serif";
+    const tw = ctx.measureText(tip.text).width;
+    const x = Math.min(
+      tip.x + 14,
+      this.columns * Style.StrideX + Style.Padding - tw - pad * 2 - 8,
+    );
+    const y = Math.max(Style.Padding + 4, tip.y - 28);
+    const w = tw + pad * 2;
+    const h = 20;
+    ctx.fillStyle = withAlpha("#0c0c10", 0.92);
+    ctx.strokeStyle = withAlpha("#fbbf24", 0.55);
+    ctx.lineWidth = 1;
+    roundRect(ctx, x, y, w, h, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#f5f5f4";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(tip.text, x + pad, y + h / 2);
   }
 
   _drawGestureGhosts(ctx) {
-    if (this._autoDrag?.point) {
-      const o = Style.cellCenter(this._autoDrag.point);
-      ctx.fillStyle = withAlpha("#fbbf24", 0.7);
-      ctx.beginPath();
-      ctx.moveTo(o.x, o.y - 8);
-      ctx.lineTo(o.x + 8, o.y);
-      ctx.lineTo(o.x, o.y + 8);
-      ctx.lineTo(o.x - 8, o.y);
-      ctx.closePath();
+    // ON/OFF/param drag ghost
+    if (this._trigDrag?.point && !this._trigDrag.insideFx) {
+      const pt = this._trigDrag.point;
+      const o = Style.cellCenter(pt);
+      const valid = this.onIsValidTrigger?.(pt) !== false;
+      ctx.globalAlpha = valid ? 1 : 0.5;
+      ctx.fillStyle = this._trigDrag.kind === "on" ? "#4ade80"
+        : this._trigDrag.kind === "off" ? "#f87171" : "#fbbf24";
+      roundRect(ctx, o.x - 12, o.y - 8, 24, 16, 4);
       ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#1c1917";
+      ctx.font = "700 9px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(this._trigDrag.kind === "param" ? "P" : this._trigDrag.kind.toUpperCase(), o.x, o.y);
     }
-    if (this._pathDrag?.point) {
-      const lane = this.score.lanes[this._pathDrag.laneIndex];
-      if (lane) {
-        const a = Style.cellCenter(lane.cellPoint(this._pathDrag.fromStep, 0));
-        const b = Style.cellCenter(this._pathDrag.point);
-        ctx.strokeStyle = withAlpha("#a78bfa", 0.9);
-        ctx.setLineDash([3, 2]);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-    }
-    if (this._fxChainDrag?.moved && this._fxChainDrag.point) {
-      const from = this.score.fxModules.find((m) => m.id === this._fxChainDrag.fromFxId);
-      if (from) {
-        const a = Style.cellCenter(fxCenter(from));
-        const b = Style.cellCenter(this._fxChainDrag.point);
-        ctx.strokeStyle = withAlpha("#34d399", 0.9);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-      }
+    if (this._sliderDrag?.draggingOut && this._sliderDrag.point && !this._sliderDrag.insideFx) {
+      const pt = this._sliderDrag.point;
+      const o = Style.cellCenter(pt);
+      const short = formatAutoShort(this._sliderDrag.paramKey, this._sliderDrag.value);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#fbbf24";
+      roundRect(ctx, o.x - 14, o.y - 8, 28, 16, 4);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#1c1917";
+      ctx.font = "700 8px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(short, o.x, o.y);
     }
   }
 
@@ -1056,24 +1709,39 @@ export class ScoreView {
         this._drawCircularRail(ctx, lane);
         continue;
       }
-      // Polyline rail through path centres
-      ctx.strokeStyle = withAlpha(Style.NoteLine, Style.RailOpacity);
+      // Polyline rail: active segments full opacity, inactive at 0.5
       ctx.lineWidth = 2;
       ctx.setLineDash([2, 5]);
-      ctx.beginPath();
-      for (let i = 0; i < lane.path.length; i++) {
-        const c = Style.cellCenter(lane.path[i]);
-        if (i === 0) ctx.moveTo(c.x, c.y);
-        else ctx.lineTo(c.x, c.y);
+      for (let i = 0; i < lane.path.length - 1; i++) {
+        const a = Style.cellCenter(lane.path[i]);
+        const b = Style.cellCenter(lane.path[i + 1]);
+        const on = lane.isStepActive(i) && lane.isStepActive(i + 1);
+        ctx.strokeStyle = withAlpha(Style.NoteLine, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
       }
-      ctx.stroke();
+      // Single-step rail tick
+      if (lane.path.length === 1) {
+        const c = Style.cellCenter(lane.path[0]);
+        const on = lane.isStepActive(0);
+        ctx.strokeStyle = withAlpha(Style.NoteLine, on ? Style.RailOpacity : Style.RailOpacity * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(c.x - 4, c.y);
+        ctx.lineTo(c.x + 4, c.y);
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
-      // Gray inactive span preview while dragging
-      if (this._loopDrag?.lane === lane && this._loopDrag.hover) {
-        ctx.fillStyle = withAlpha("#000", 0.35);
-        // mark potential drop
+      // Drop target highlight while reshaping
+      if (this._loopDrag?.lane === lane && this._loopDrag.hover && this._loopDrag.armed) {
         const h = Style.cellRect(this._loopDrag.hover);
-        ctx.fillRect(h.x, h.y, h.w, h.h);
+        ctx.strokeStyle = withAlpha(Style.Cursor, 0.85);
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 2]);
+        roundRect(ctx, h.x + 0.5, h.y + 0.5, h.w - 1, h.h - 1, Style.Radius);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
   }
@@ -1159,10 +1827,11 @@ export class ScoreView {
   }
 
   _drawMarkers(ctx) {
-    ctx.fillStyle = Style.Marker;
     for (const lane of this.score.lanes) {
       for (let i = 0; i < lane.steps.length; i++) {
         if (!lane.steps[i].isEmpty) continue;
+        const active = lane.isStepActive(i);
+        ctx.fillStyle = withAlpha(Style.Marker, active ? 1 : 0.5);
         const o = Style.cellOrigin(lane.cellPoint(i, 0));
         const x = o.x + Math.floor((Style.CellWidth - 7) / 2);
         const y = o.y + Math.floor((Style.CellHeight - 9) / 2);
@@ -1187,7 +1856,8 @@ export class ScoreView {
       }
       for (let i = 0; i < lane.steps.length; i++) {
         const active = lane.isStepActive(i);
-        const alpha = active ? 1 : 0.28;
+        // Deselected (outside start–end window): still readable at half opacity
+        const alpha = active ? 1 : 0.5;
         for (let d = 0; d < lane.steps[i].depth; d++) {
           const lifted = this._isLifted(lane, i, d);
           this._drawTile(
@@ -1197,13 +1867,15 @@ export class ScoreView {
             lifted ? 0.2 : alpha,
           );
         }
-        // Gray empty active/inactive rails
-        if (lane.steps[i].isEmpty) {
-          if (!active) {
-            const r = Style.cellRect(lane.path[i]);
-            ctx.fillStyle = withAlpha("#000", 0.25);
-            ctx.fillRect(r.x, r.y, r.w, r.h);
-          }
+        // Empty inactive rails: faint cell outline so the strip stays visible
+        if (lane.steps[i].isEmpty && !active) {
+          const r = Style.cellRect(lane.path[i]);
+          ctx.strokeStyle = withAlpha(Style.NoteLine, 0.35);
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 2]);
+          roundRect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Style.Radius);
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
       }
     }
@@ -1815,19 +2487,38 @@ export class JacquardUI {
       this.canvas.focus();
     };
     this.view.onFxSelect = (id) => {
+      this.editor.clearObjectSelection();
       this.editor.selectedFxId = id;
       this.view.selectedFxId = id;
+      this.view.selectedAutoId = null;
+      this.view.selectedPathId = null;
       this.refreshPanels(true);
     };
-    this.view.onAutoPlaced = ({ fxId, paramKey, value, point }) => {
-      this.editor.placeAutoNode(fxId, paramKey, value, point);
+    this.view.onAutoSelect = (id) => {
+      this.editor.clearObjectSelection();
+      this.editor.selectedAutoId = id;
+      this.view.selectedAutoId = id;
+      this.view.selectedFxId = null;
+      this.view.selectedPathId = null;
+      this.refreshPanels(true);
     };
-    this.view.onPathRouted = ({ laneIndex, fromStep, toStep, targetFxId }) => {
-      this.editor.placePathRoute(laneIndex, fromStep, toStep, targetFxId);
+    this.view.onTriggerPlaced = ({ kind, fxId, paramKey, value, point }) => {
+      this.editor.placeTrigger({
+        kind,
+        targetFxId: fxId,
+        paramKey,
+        value,
+        point,
+      });
     };
-    this.view.onFxChained = ({ fromFxId, toFxId }) => {
-      this.editor.placeFxRoute(fromFxId, toFxId);
+    this.view.onFxParamChanged = (commit) => {
+      if (commit) this.editor.commit();
+      else {
+        this.editor.touch();
+        this.view.paint();
+      }
     };
+    this.view.onIsValidTrigger = (point) => this.editor.isValidTriggerCell(point);
     this.view.onCursorMoved = () => this.refreshPanels();
     this.view.onDoubleClick = () => this.editor.placeNote();
     this.view.onTilesDropped = (s, t) => this.editor.dropTiles(s, t);
@@ -1867,9 +2558,126 @@ export class JacquardUI {
     this.right.append(this.tilePanel, this.soundPanel, this.lockPanel, this.fxPanel);
 
     this._buildTransport();
+    this._buildDockKeyboard();
     this.refreshPanels(true);
     this.view.rebuild();
     this.canvas.focus();
+  }
+
+  /** Fixed bottom keyboard: audition focus lane, drag keys onto steps. */
+  _buildDockKeyboard() {
+    this.dock = el("div", "dock-keyboard");
+    this.body.append(this.dock);
+
+    const laneRow = el("div", "dock-lane-row");
+    laneRow.append(button("‹", () => {
+      this.editor.cycleFocusLane(-1);
+      this._refreshDockLaneLabel();
+      this.canvas.focus();
+    }, 28));
+    this.dockLaneLabel = el("div", "dock-lane-label", "Lane");
+    laneRow.append(this.dockLaneLabel);
+    laneRow.append(button("›", () => {
+      this.editor.cycleFocusLane(1);
+      this._refreshDockLaneLabel();
+      this.canvas.focus();
+    }, 28));
+    this.dock.append(laneRow);
+
+    const kb = el("div", "dock-keys");
+    this.dock.append(kb);
+    // C3–C5 white keys + blacks
+    const lows = [48, 50, 52, 53, 55, 57, 59, 60, 62, 64, 65, 67, 69, 71, 72];
+    const blacks = [
+      { n: 49, after: 0 }, { n: 51, after: 1 },
+      { n: 54, after: 3 }, { n: 56, after: 4 }, { n: 58, after: 5 },
+      { n: 61, after: 7 }, { n: 63, after: 8 },
+      { n: 66, after: 10 }, { n: 68, after: 11 }, { n: 70, after: 12 },
+    ];
+    const whiteWrap = el("div", "dock-whites");
+    const blackWrap = el("div", "dock-blacks");
+    kb.append(whiteWrap, blackWrap);
+
+    lows.forEach((note, i) => {
+      const key = el("button", "dock-key white");
+      key.type = "button";
+      key.textContent = Pitch.toName(note).replace(/\d+$/, "");
+      key.title = Pitch.toName(note);
+      this._bindDockKey(key, note);
+      whiteWrap.append(key);
+    });
+    blacks.forEach(({ n, after }) => {
+      const key = el("button", "dock-key black");
+      key.type = "button";
+      key.title = Pitch.toName(n);
+      key.style.left = `calc(${(after + 0.65) * (100 / lows.length)}% - 8px)`;
+      this._bindDockKey(key, n);
+      blackWrap.append(key);
+    });
+
+    this._refreshDockLaneLabel();
+  }
+
+  _refreshDockLaneLabel() {
+    const lane = this.editor.focusLane;
+    if (!this.dockLaneLabel) return;
+    if (!lane) {
+      this.dockLaneLabel.textContent = "No lane";
+      return;
+    }
+    const name = lane.channel?.displayName || lane.channel?.shortName || "Lane";
+    const i = this.editor.score.channelLanes.indexOf(lane) + 1;
+    this.dockLaneLabel.textContent = i + " · " + name;
+  }
+
+  _bindDockKey(key, note) {
+    key.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.editor.auditionNote(note);
+      key.setPointerCapture(e.pointerId);
+      this._dockDrag = {
+        note,
+        originX: e.clientX,
+        originY: e.clientY,
+        armed: false,
+        ghost: null,
+      };
+      const move = (ev) => {
+        const d = this._dockDrag;
+        if (!d) return;
+        if (!d.armed && Math.hypot(ev.clientX - d.originX, ev.clientY - d.originY) > 8) {
+          d.armed = true;
+          d.ghost = el("div", "dock-note-ghost", Pitch.toName(note));
+          document.body.append(d.ghost);
+        }
+        if (d.ghost) {
+          d.ghost.style.left = ev.clientX + 8 + "px";
+          d.ghost.style.top = ev.clientY + 8 + "px";
+          const point = this.view.score && Style.cellAt(this.view.localPoint(ev));
+          const valid = point && this.editor.canPlaceTileAt(point);
+          d.ghost.classList.toggle("valid", !!valid);
+          d.ghost.style.opacity = valid ? "1" : "0.5";
+        }
+      };
+      const up = (ev) => {
+        key.releasePointerCapture(e.pointerId);
+        key.removeEventListener("pointermove", move);
+        key.removeEventListener("pointerup", up);
+        const d = this._dockDrag;
+        this._dockDrag = null;
+        if (d?.ghost) d.ghost.remove();
+        if (d?.armed) {
+          const point = Style.cellAt(this.view.localPoint(ev));
+          if (this.editor.canPlaceTileAt(point)) {
+            this.editor.placeNoteAt(point, note);
+          }
+        }
+        this.canvas.focus();
+      };
+      key.addEventListener("pointermove", move);
+      key.addEventListener("pointerup", up);
+    });
   }
 
   _buildTransport() {
@@ -1948,6 +2756,8 @@ export class JacquardUI {
     this.view.score = this.app.project.score;
     this.view.sequencer = this.app.sequencer;
     this.view.selectedFxId = this.editor.selectedFxId;
+    this.view.selectedAutoId = this.editor.selectedAutoId;
+    this.view.selectedPathId = this.editor.selectedPathId;
     this.view.rebuild();
     this.refreshPanels(true);
     this.onSketchMetaChanged();
@@ -1964,19 +2774,32 @@ export class JacquardUI {
   buildTilePanel() {
     const panel = this.tilePanel;
     panel.innerHTML = "";
+    ensureFxLists(this.editor.score);
+    this._refreshDockLaneLabel?.();
+
+    // Trigger pad inspector
+    const trig = this.editor.score.fxTriggers.find(
+      (t) => t.id === this.editor.selectedAutoId,
+    );
+    if (trig) {
+      this._buildTriggerInspector(panel, trig);
+      return;
+    }
+
     panel.append(el("div", "panel-title", "Tile"));
     const body = el("div", "panel-body");
     panel.append(body);
 
     const tile = this.editor.selected;
     const lane = this.editor.selectedLane;
-    body.append(el("div", "caption", describe(tile)));
+    const cell = this.editor.cell;
+    body.append(el("div", "caption", describeCell(cell, tile, lane)));
 
     if (this.editor.canPlace) {
       body.append(el("div", "divider"));
       body.append(el("div", "caption",
-        "Press: ← → category, ↓ choose, release. Dismiss cancels. " +
-        "Drag 𝄋 start / loop-end handles to reshape; stack them for a tape loop. Esc cancels drags."));
+        "← → category, ↓ choose, release. Drag notes from the bottom keyboard onto steps. " +
+        "FX triggers: drag ON/OFF or a slider value off a pedal onto empty cells next to a lane."));
       const grid = el("div", "palette");
       for (const kind of KINDS) {
         grid.append(button(kind, () => {
@@ -1985,6 +2808,59 @@ export class JacquardUI {
         }, 52));
       }
       body.append(grid);
+      return;
+    }
+
+    // Head / term handles (no tile body — still need lane controls)
+    if (cell.kind === CellKind.Head && lane) {
+      body.append(el("div", "divider"));
+      body.append(el("div", "caption", "Drag to move start. Click shows this panel."));
+      const steps = el("div", "control-row");
+      steps.append(el("div", "control-label", "Steps"));
+      const value = el("div", "chooser-value");
+      const paintSteps = () => {
+        value.textContent = String(lane.steps.length);
+      };
+      steps.append(
+        button("−", () => {
+          this.editor.resizeLane(-1);
+          paintSteps();
+          this.canvas.focus();
+        }, 28),
+        value,
+        button("+", () => {
+          this.editor.resizeLane(1);
+          paintSteps();
+          this.canvas.focus();
+        }, 28),
+      );
+      paintSteps();
+      body.append(steps);
+      body.append(el("div", "divider"));
+      body.append(button("Delete lane", () => {
+        this.editor.delete();
+        this.canvas.focus();
+      }, 74));
+      return;
+    }
+
+    if (cell.kind === CellKind.Term && lane) {
+      body.append(el("div", "divider"));
+      body.append(el("div", "caption",
+        "Drag to move loop end. Stack on start for a circular tape loop."));
+      body.append(el("div", "divider"));
+      body.append(button("Delete lane", () => {
+        this.editor.setCursor(lane.headPoint);
+        this.editor.delete();
+        this.canvas.focus();
+      }, 74));
+      return;
+    }
+
+    if (cell.kind === CellKind.Rail && lane) {
+      body.append(el("div", "divider"));
+      body.append(el("div", "caption",
+        "Empty step. Place a tile, or ⌥/⌘-drag to an FX pedal for a path send."));
       return;
     }
 
@@ -2068,38 +2944,71 @@ export class JacquardUI {
       ));
     }
 
-    if (this.editor.cell.kind === CellKind.Head && lane) {
-      body.append(el("div", "divider"));
-      body.append(el("div", "caption", "Lane"));
-      const steps = el("div", "control-row");
-      steps.append(el("div", "control-label", "Steps"));
-      const value = el("div", "chooser-value");
-      const paintSteps = () => {
-        value.textContent = String(lane.steps.length);
-      };
-      steps.append(
-        button("−", () => {
-          this.editor.resizeLane(-1);
-          paintSteps();
-          this.canvas.focus();
-        }, 28),
-        value,
-        button("+", () => {
-          this.editor.resizeLane(1);
-          paintSteps();
-          this.canvas.focus();
-        }, 28),
-      );
-      paintSteps();
-      body.append(steps);
+    body.append(el("div", "divider"));
+    body.append(button("Delete", () => {
+      this.editor.delete();
+      this.canvas.focus();
+    }, 54));
+  }
+
+  _buildTriggerInspector(panel, trig) {
+    const score = this.editor.score;
+    const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
+    const fxDef = mod ? (FxTypes[mod.type] || FxTypes.delay) : null;
+    const near = triggerAdjacentToAnyLane(score, trig);
+
+    const title = trig.kind === "on" ? "ON trigger"
+      : trig.kind === "off" ? "OFF trigger"
+        : trig.kind === "chan" ? "Instrument param"
+          : "FX param";
+    panel.append(el("div", "panel-title", title));
+    const body = el("div", "panel-body");
+    panel.append(body);
+
+    body.append(el("div", "caption", formatAutoLong(score, trig)));
+    body.append(el("div", "divider"));
+    body.append(el("div", "caption",
+      near
+        ? "Adjacent to a lane — opacity 1; fires when a neighbor step lights."
+        : "Not next to a lane (opacity 0.5) — move beside a step cell."));
+
+    if (trig.kind === "param" || trig.kind === "chan") {
+      const pDef = autoParamDef(score, trig);
+      const min = pDef?.min ?? 0;
+      const max = pDef?.max ?? 1;
+      const range = (trig.paramKey === "time" ||
+        trig.paramKey === "moddecay" ||
+        trig.paramKey === "carattack" ||
+        trig.paramKey === "carrelease" ||
+        trig.paramKey === "pitchdecay")
+        ? Ranges.seconds(min, max)
+        : Ranges.amount(min, max);
+      body.append(barRow(
+        pDef?.label || trig.paramKey,
+        range,
+        () => trig.value,
+        (v) => {
+          trig.value = v;
+          this.editor.touch();
+          this.view.paint();
+        },
+      ));
+    }
+
+    if (trig.kind === "chan") {
+      body.append(el("div", "caption", "Channel " + (trig.channel | 0) + " instrument"));
+    } else {
+      body.append(el("div", "caption",
+        "Target: " + (fxDef ? fxDef.name : "?") +
+        (mod ? (mod.on ? " · insert ON" : " · insert off") : "")));
     }
 
     body.append(el("div", "divider"));
-    const head = this.editor.cell.kind === CellKind.Head;
-    body.append(button(head ? "Delete lane" : "Delete", () => {
-      this.editor.delete();
+    body.append(button("Delete", () => {
+      this.editor.deleteSelectedAuto();
+      this.view.selectedAutoId = null;
       this.canvas.focus();
-    }, head ? 74 : 54));
+    }, 54));
   }
 
   buildSoundPanel() {
@@ -2114,9 +3023,12 @@ export class JacquardUI {
     this.soundPanel.append(el("div", "panel-title", "Sound"));
     const body = el("div", "panel-body");
     this.soundPanel.append(body);
-    body.append(el("div", "caption", "Channel " + channel));
+    body.append(el("div", "caption",
+      "Channel " + channel + " — scrub a bar, or drag vertically off a bar " +
+      "onto the grid (next to a lane step) to place an instrument param trigger."));
     body.append(el("div", "divider"));
     const patch = PatchBank.get(this.editor.project.patches, channel);
+    ensureFxLists(this.editor.score);
     body.append(chooser(
       "Instrument",
       InstrumentNames,
@@ -2128,6 +3040,7 @@ export class JacquardUI {
     ));
     for (let t = 0; t < ParamTargets.Count; t++) {
       const target = t;
+      const key = ParamTargets.key(target);
       body.append(barRow(
         ParamTargets.name(target),
         Ranges.ofParam(target),
@@ -2137,6 +3050,29 @@ export class JacquardUI {
           this.app.scheduleSave();
         },
         () => this.editor.preview(60, channel),
+        {
+          getTicks: () => this.editor.score.fxTriggers
+            .filter((tr) => tr.kind === "chan" &&
+              (tr.channel | 0) === channel &&
+              tr.paramKey === key)
+            .map((tr) => tr.value),
+          isDragOutValid: (cx, cy) => {
+            const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
+            return this.editor.isValidTriggerCell(point);
+          },
+          onDragOut: (value, cx, cy) => {
+            const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
+            if (!this.editor.isValidTriggerCell(point)) return;
+            this.editor.placeTrigger({
+              kind: "chan",
+              channel,
+              paramKey: key,
+              value,
+              point,
+            });
+            this.canvas.focus();
+          },
+        },
       ));
     }
     body.append(el("div", "divider"));
@@ -2188,6 +3124,11 @@ export class JacquardUI {
   buildFxPanel() {
     const panel = this.fxPanel;
     ensureFxLists(this.editor.score);
+    // Hide FX panel when an auto/path inspector owns the tile panel.
+    if (this.editor.selectedAutoId || this.editor.selectedPathId) {
+      panel.classList.add("hidden");
+      return;
+    }
     const mod = this.editor.score.fxModules.find((m) => m.id === this.editor.selectedFxId);
     if (!mod) {
       panel.classList.add("hidden");
@@ -2201,14 +3142,21 @@ export class JacquardUI {
     panel.append(body);
     if (def.patternOp) {
       body.append(el("div", "caption",
-        "Fires when the playhead column hits this object. " +
-        "P+ / P− step the pattern bank; P→ jumps to pattern # (1-based bar), " +
-        "always modulo the number of patterns. Transport beat keeps running."));
+        "Pattern control. Playhead column on this block → change pattern. " +
+        "P+ / P− step bank; P→ jump to #. Beat clock keeps running."));
     } else {
       body.append(el("div", "caption",
-        "Gold ◆ next to a param: drag onto the grid = automation. " +
-        "⌥/⌘-drag from a step to this pedal = path send window. " +
-        "Drag pedal→pedal = chain."));
+        "Insert pedal (master bus). ON = engaged, OFF = bypass (mix ramps to 0). " +
+        "Drag top-left ON or top-right OFF onto a cell beside a lane step. " +
+        "Scrub a slider, or drag a value off the slider to place a param trigger. " +
+        "Drop back on the pedal to cancel."));
+      // Toggle on from panel
+      body.append(button(mod.on ? "Bypass (off)" : "Engage (on)", () => {
+        mod.on = !mod.on;
+        this.editor.commit();
+        this.view.paint();
+        this.buildFxPanel();
+      }, 90));
     }
     body.append(el("div", "divider"));
     for (const p of def.params) {
@@ -2220,7 +3168,9 @@ export class JacquardUI {
           digits: 0,
           display: (v) => "#" + (Math.round(v) + 1),
         })
-        : Ranges.amount(p.min, p.max);
+        : (p.key === "time"
+          ? Ranges.seconds(p.min, p.max)
+          : Ranges.amount(p.min, p.max));
       body.append(barRow(
         p.label,
         range,
@@ -2235,8 +3185,10 @@ export class JacquardUI {
     body.append(el("div", "divider"));
     body.append(button("Delete", () => {
       this.editor.deleteAtCursor();
-      this.editor.selectedFxId = null;
+      this.editor.clearObjectSelection();
       this.view.selectedFxId = null;
+      this.view.selectedAutoId = null;
+      this.view.selectedPathId = null;
       this.refreshPanels(true);
       this.canvas.focus();
     }, 70));
@@ -2262,19 +3214,48 @@ export class JacquardUI {
 }
 
 function describe(tile) {
-  if (!tile) return "Empty cell";
-  if (tile instanceof NoteTile) return "Note " + tile.token;
+  if (!tile) return "Empty cell — free ground or free step.";
+  if (tile instanceof NoteTile) {
+    return "Note. Triggers a voice at this pitch when the playhead hits the step. " +
+      "Length is in steps (can span past the next cells).";
+  }
   if (tile instanceof ParamTile) {
-    return tile.absolute ? "PABS  absolute lock" : "PREL  relative lock";
+    return tile.absolute
+      ? "Absolute lock (PABS). Overrides channel synth params to fixed values while active."
+      : "Relative lock (PREL). Offsets channel synth params from the patch defaults.";
   }
-  if (tile instanceof CycleGateTile) return "GCYC  cycle gate";
-  if (tile instanceof ProbGateTile) return "GPRB  probability gate";
+  if (tile instanceof CycleGateTile) {
+    return "Cycle gate (GCYC). Passes only every Nth visit (period), on the chosen fire index.";
+  }
+  if (tile instanceof ProbGateTile) {
+    return "Probability gate (GPRB). Randomly allows the step with the set chance %.";
+  }
   if (tile instanceof ChannelTile) {
-    return "CHAN  " + tile.displayName +
-      (tile.label ? "  (" + tile.shortName + ")" : "");
+    return "Channel head. Chooses instrument channel, step division, and display name for this lane.";
   }
-  if (tile instanceof TerminatorTile) return "TERM  lane end";
-  if (tile instanceof JumpTile) return "JUMP  branch out";
-  if (tile instanceof JumpDestTile) return "JDST  branch target";
-  return tile.token;
+  if (tile instanceof TerminatorTile) {
+    return "Lane end (TERM). Marks where the lane stops or loops back.";
+  }
+  if (tile instanceof JumpTile) {
+    return "Jump (JUMP). Branches the runner onto a linked side lane.";
+  }
+  if (tile instanceof JumpDestTile) {
+    return "Jump destination (JDST). Landing cell for a jump branch.";
+  }
+  return tile.token || "Tile";
+}
+
+function describeCell(cell, tile, lane) {
+  if (cell?.kind === CellKind.Head) {
+    return "Lane start (dal segno 𝄋). Play begins here each loop. " +
+      "Drag to reshape start; drag onto the end handle for a circular tape loop.";
+  }
+  if (cell?.kind === CellKind.Term) {
+    return "Lane end (loop-back). Runner returns to start after this cell. " +
+      "Drag to resize the loop.";
+  }
+  if (cell?.kind === CellKind.Rail && !tile) {
+    return "Empty rail step on a lane. Notes and gates go here.";
+  }
+  return describe(tile);
 }

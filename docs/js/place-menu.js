@@ -1,15 +1,17 @@
-// In-place gesture menu: one pointer stroke picks an action.
-// ← → category · ↓ arm item · release commits · Dismiss = release without arming.
+// Grid-native place gestures.
+// Lane cells: floating category menu (tiles).
+// Empty ground: canvas shell — L/U/R create lane, ↓ create object (see ScoreView).
 
 import { Pitch } from "./core.js";
 
 const CAT_PX = 52;
 const ITEM_PX = 28;
-const DEAD_Y = 22; // must drag below the Dismiss band before items arm
+const DEAD_Y = 22;
 const ARM_Y = 8;
 
 /**
- * Categories for free cells on a lane (place tiles / grow / etc.).
+ * Lane place menu — tiles only.
+ * Notes: prefer the dock keyboard. FX triggers drag from pedals.
  */
 export function buildLaneCategories(centreNote = 60) {
   const centre = Math.min(Pitch.Highest - 6, Math.max(Pitch.Lowest + 6, centreNote | 0));
@@ -30,11 +32,8 @@ export function buildLaneCategories(centreNote = 60) {
       label: "GATE",
       items: [
         { label: "GCYC 2:1", place: { kind: "GCYC", period: 2, index: 1 } },
-        { label: "GCYC 3:1", place: { kind: "GCYC", period: 3, index: 1 } },
         { label: "GCYC 4:1", place: { kind: "GCYC", period: 4, index: 1 } },
         { label: "GCYC 4:2", place: { kind: "GCYC", period: 4, index: 2 } },
-        { label: "GCYC 4:3", place: { kind: "GCYC", period: 4, index: 3 } },
-        { label: "GCYC 4:4", place: { kind: "GCYC", period: 4, index: 4 } },
         { label: "GCYC 8:1", place: { kind: "GCYC", period: 8, index: 1 } },
         { label: "25%", place: { kind: "GPRB", percent: 25 } },
         { label: "50%", place: { kind: "GPRB", percent: 50 } },
@@ -54,6 +53,15 @@ export function buildLaneCategories(centreNote = 60) {
       label: "FLOW",
       items: [{ label: "JUMP", place: { kind: "JUMP" } }],
     },
+  ];
+}
+
+/**
+ * Empty-ground object menu (no LANE — lanes are drawn by L/U/R drag).
+ * Used when the pointer commits downward into the object shell.
+ */
+export function buildGroundObjectCategories() {
+  return [
     {
       id: "fx",
       label: "FX",
@@ -73,38 +81,9 @@ export function buildLaneCategories(centreNote = 60) {
   ];
 }
 
-/**
- * Categories for empty ground (no lane under the cell).
- */
+/** @deprecated */
 export function buildGroundCategories() {
-  return [
-    {
-      id: "lane",
-      label: "LANE",
-      items: [
-        { label: "New lane", place: { kind: "NEW_LANE" } },
-        { label: "New lane ×8", place: { kind: "NEW_LANE", steps: 8 } },
-        { label: "New lane ×16", place: { kind: "NEW_LANE", steps: 16 } },
-        { label: "New lane ×32", place: { kind: "NEW_LANE", steps: 32 } },
-      ],
-    },
-    {
-      id: "fx",
-      label: "FX",
-      items: [
-        { label: "DELAY", place: { kind: "FX", fxType: "delay" } },
-        { label: "REVERB", place: { kind: "FX", fxType: "reverb" } },
-        { label: "DISTORT", place: { kind: "FX", fxType: "distort" } },
-        { label: "FILTER", place: { kind: "FX", fxType: "filter" } },
-        { label: "PAN", place: { kind: "FX", fxType: "pan" } },
-      ],
-    },
-    {
-      id: "meta",
-      label: "META",
-      items: metaItems(),
-    },
-  ];
+  return buildGroundObjectCategories();
 }
 
 function metaItems() {
@@ -126,7 +105,8 @@ export function buildPlaceCategories(centreNote = 60) {
 }
 
 /**
- * Floating gesture menu. Host wires canvas pointer events into begin/update/end.
+ * Floating gesture menu for *lane* tile placement only.
+ * Ground uses ScoreView._groundGesture (canvas-native shell).
  */
 export class PlaceMenu {
   constructor(host) {
@@ -137,12 +117,12 @@ export class PlaceMenu {
     host.appendChild(this.root);
 
     this.active = false;
-    this.mode = "lane"; // 'lane' | 'ground'
+    this.mode = "lane";
     this.point = null;
     this.origin = { x: 0, y: 0 };
     this.categories = buildLaneCategories(60);
     this.catIndex = 0;
-    this.itemIndex = -1; // -1 = Dismiss band (no commit)
+    this.itemIndex = -1;
     this._moved = false;
     this.pointerId = null;
   }
@@ -161,7 +141,7 @@ export class PlaceMenu {
   }
 
   /**
-   * @param {'lane'|'ground'} mode
+   * @param {'lane'|'ground'} mode  ground kept for compat but host uses canvas shell
    * @param {{x:number,y:number}} gridPoint
    * @param {{clientX:number,clientY:number,pointerId?:number}} pointer
    * @param {number} centreNote
@@ -173,7 +153,7 @@ export class PlaceMenu {
     this.origin = { x: pointer.clientX, y: pointer.clientY };
     this.pointerId = pointer.pointerId ?? null;
     this.categories = this.mode === "ground"
-      ? buildGroundCategories()
+      ? buildGroundObjectCategories()
       : buildLaneCategories(centreNote);
     this.catIndex = 0;
     this.itemIndex = -1;
@@ -194,7 +174,6 @@ export class PlaceMenu {
     cat = Math.min(this.categories.length - 1, Math.max(0, cat));
     this.catIndex = cat;
 
-    // Above / in the Dismiss band → no action. Down into the list → arm an item.
     if (dy < DEAD_Y) {
       this.itemIndex = -1;
     } else {
@@ -207,9 +186,6 @@ export class PlaceMenu {
     this._render();
   }
 
-  /**
-   * @returns {{ point, place } | null}
-   */
   end() {
     if (!this.active) return null;
     const point = this.point;
@@ -246,12 +222,9 @@ export class PlaceMenu {
 
     const hint = document.createElement("div");
     hint.className = "place-menu-hint";
-    hint.textContent = this.mode === "ground"
-      ? "empty ground · ← → category · ↓ choose"
-      : "← → category · ↓ choose · release";
+    hint.textContent = "← → category · ↓ choose · release";
     this.root.appendChild(hint);
 
-    // Explicit dismiss band — release here does nothing (natural "return")
     const dismiss = document.createElement("div");
     dismiss.className = "place-menu-dismiss" + (this.isDismiss ? " active" : "");
     dismiss.textContent = "Dismiss";

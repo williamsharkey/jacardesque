@@ -41,6 +41,8 @@ class App {
     this.songOriginSample = 0;
     this.globalBeat = 0; // monotonic sixteenth-note count at active tempo
     this._patternFire = new Map(); // debounce pattern modules
+    this._fxAutoLatch = new Map(); // sample-and-hold param: fxId\0param → value
+    this._fxTrigFired = new Map(); // debounce adjacency fires
     this._switching = false;
   }
 
@@ -77,6 +79,8 @@ class App {
     if (this.sequencer.isPlaying) {
       this.sequencer.stop();
       this._patternFire.clear();
+      this._fxAutoLatch.clear();
+      this._fxTrigFired.clear();
     } else {
       this.audio.setFx(this.project.fx, this.project.tempo);
       const now = this.audio.pollSample();
@@ -84,6 +88,8 @@ class App {
       this.songOriginSample = now + this.audio.lookaheadSamples;
       this.globalBeat = 0;
       this._patternFire.clear();
+      this._fxAutoLatch.clear();
+      this._fxTrigFired.clear();
       this.sequencer.play(now, this.audio.lookaheadSamples);
     }
     this.ui.view.refreshPlayheads();
@@ -210,7 +216,10 @@ class App {
         let still = false;
         for (const r of this.sequencer.runners) {
           if (r.playingLane == null || r.playingStep < 0) continue;
-          const col = r.playingLane.x + r.playingStep;
+          const lane = r.playingLane;
+          lane.ensurePath?.();
+          const pt = lane.cellPoint?.(r.playingStep, 0);
+          const col = pt ? pt.x : lane.x + r.playingStep;
           const mod = this.project.score.fxModules.find((m) => m.id === id);
           if (!mod) continue;
           if (col >= mod.x && col < mod.x + mod.w) still = true;
@@ -249,11 +258,20 @@ class App {
 
     this.audio.setFx(this.project.fx, this.project.tempo);
     ensureFxLists(this.project.score);
-    this.audio.setFxGraph(buildFxGraphMessage(
+    if (!this.sequencer.isPlaying) {
+      this._fxAutoLatch.clear();
+      this._fxTrigFired.clear();
+    }
+    const fxMsg = buildFxGraphMessage(
       this.project,
       this.sequencer.runners,
       this.sequencer.isPlaying,
-    ));
+      this._fxAutoLatch,
+      this._fxTrigFired,
+    );
+    this.audio.setFxGraph(fxMsg);
+    // UI reads live FX state for dim/pulse/param bars
+    if (this.ui?.view) this.ui.view.fxLive = fxMsg.live || null;
     this.ui.update();
   }
 }

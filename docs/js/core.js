@@ -752,40 +752,92 @@ export class Lane {
     return this.termPoint.x;
   }
 
-  /** Start marker — dal segno / return-to (before first active beat). */
+  /** Start marker — dal segno / return-to (before first *active* beat). */
   get headPoint() {
     this.ensurePath();
     if (!this.path.length) return gp(this.x - 1, this.y);
-    const p0 = this.path[0];
-    // Direction opposite the first edge (or left if single step)
+    const i0 = this.activeStart;
+    const p0 = this.path[i0] || this.path[0];
+    // Direction opposite the first active edge (or left if single step)
     let dx = -1;
     let dy = 0;
-    if (this.path.length > 1) {
-      const p1 = this.path[1];
+    if (i0 + 1 < this.activeEnd) {
+      const p1 = this.path[i0 + 1];
       dx = Math.sign(p0.x - p1.x) || (p0.y === p1.y ? -1 : 0);
       dy = Math.sign(p0.y - p1.y) || 0;
-      if (dx === 0 && dy === 0) {
-        dx = -1;
-        dy = 0;
-      }
+    } else if (i0 + 1 < this.path.length) {
+      const p1 = this.path[i0 + 1];
+      dx = Math.sign(p0.x - p1.x) || (p0.y === p1.y ? -1 : 0);
+      dy = Math.sign(p0.y - p1.y) || 0;
+    } else if (i0 > 0) {
+      const prev = this.path[i0 - 1];
+      dx = Math.sign(p0.x - prev.x) || -1;
+      dy = Math.sign(p0.y - prev.y) || 0;
+    }
+    if (dx === 0 && dy === 0) {
+      dx = -1;
+      dy = 0;
     }
     // Circular: start/end share the joint cell before the first beat (not a step).
     return gp(p0.x + dx, p0.y + dy);
   }
 
-  /** End marker — loop-back (after last active beat). Circular: same as head. */
+  /** End marker — loop-back (after last *active* beat). Circular: same as head. */
   get termPoint() {
     this.ensurePath();
     if (!this.path.length) return gp(this.x, this.y);
     if (this.circular) return this.headPoint;
-    const last = this.path[this.path.length - 1];
-    if (this.path.length > 1) {
-      const prev = this.path[this.path.length - 2];
-      const dx = Math.sign(last.x - prev.x) || 1;
-      const dy = Math.sign(last.y - prev.y) || 0;
-      return gp(last.x + dx, last.y + dy);
+    const iLast = this.activeEnd - 1;
+    const last = this.path[Math.max(0, iLast)] || this.path[this.path.length - 1];
+    let dx = 1;
+    let dy = 0;
+    if (iLast > this.activeStart) {
+      const prev = this.path[iLast - 1];
+      dx = Math.sign(last.x - prev.x) || 1;
+      dy = Math.sign(last.y - prev.y) || 0;
+    } else if (iLast + 1 < this.path.length) {
+      const next = this.path[iLast + 1];
+      dx = Math.sign(next.x - last.x) || 1;
+      dy = Math.sign(next.y - last.y) || 0;
+    } else if (iLast > 0) {
+      const prev = this.path[iLast - 1];
+      dx = Math.sign(last.x - prev.x) || 1;
+      dy = Math.sign(last.y - prev.y) || 0;
     }
-    return gp(last.x + 1, last.y);
+    if (dx === 0 && dy === 0) {
+      dx = 1;
+      dy = 0;
+    }
+    return gp(last.x + dx, last.y + dy);
+  }
+
+  /** Deep-enough snapshot for live reshape preview (restore between drag frames). */
+  snapshot() {
+    this.ensurePath();
+    return {
+      x: this.x,
+      y: this.y,
+      circular: this.circular,
+      activeFrom: this.activeFrom,
+      activeTo: this.activeTo == null ? this.steps.length : this.activeTo,
+      path: this.path.map((p) => gp(p.x, p.y)),
+      steps: this.steps.map((s) => s.tiles.slice()),
+    };
+  }
+
+  restore(snap) {
+    if (!snap) return;
+    this.x = snap.x;
+    this.y = snap.y;
+    this.circular = !!snap.circular;
+    this.activeFrom = snap.activeFrom | 0;
+    this.activeTo = snap.activeTo;
+    this.path = snap.path.map((p) => gp(p.x, p.y));
+    this.steps = snap.steps.map((tiles) => {
+      const step = new Step();
+      for (const t of tiles) step.tiles.push(t);
+      return step;
+    });
   }
 
   cellPoint(step, depth) {
@@ -914,8 +966,9 @@ export function emptyCell() {
 export class Score {
   constructor() {
     this.lanes = [];
-    // Grid-native FX world (pedals, path sends, chains, automation).
+    // Grid-native FX world (insert pedals + adjacency triggers).
     this.fxModules = [];
+    this.fxTriggers = [];
     this.pathRoutes = [];
     this.fxRoutes = [];
     this.autoNodes = [];
@@ -1167,6 +1220,104 @@ export class Score {
   }
 
   /**
+   * Live drag preview for end handle.
+   * Shorten → only narrow the active window (inactive steps stay at 0.5 opacity).
+   * Grow / circular → mutate path (caller restores snapshot each frame).
+   */
+  previewReshapeEnd(lane, target) {
+    if (!lane) return false;
+    target = this.wrap(target);
+    lane.ensurePath();
+    lane.circular = false;
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
+
+    // Full-path head (ignore active window) for circular stack test
+    const fullHead = this._fullHeadPoint(lane);
+    if (gpEq(target, fullHead) && lane.steps.length >= 1) {
+      lane.circular = true;
+      return true;
+    }
+
+    const hit = lane.stepIndexAt(target);
+    if (hit >= 0) {
+      lane.activeTo = hit + 1;
+      return true;
+    }
+
+    // Grow from the full last step
+    return this.reshapeLaneEnd(lane, target);
+  }
+
+  /**
+   * Live drag preview for start handle.
+   * Shorten → raise activeFrom (prefix stays visible at 0.5).
+   */
+  previewReshapeStart(lane, target) {
+    if (!lane) return false;
+    target = this.wrap(target);
+    lane.ensurePath();
+    lane.circular = false;
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
+
+    const fullTerm = this._fullTermPoint(lane);
+    if (gpEq(target, fullTerm) && lane.steps.length >= 1) {
+      lane.circular = true;
+      return true;
+    }
+
+    const hit = lane.stepIndexAt(target);
+    if (hit >= 0) {
+      lane.activeFrom = hit;
+      return true;
+    }
+
+    return this.reshapeLaneStart(lane, target);
+  }
+
+  /** Commit a reshape after mouse-up (truncate inactive, or keep grow/circular). */
+  commitReshape(lane, which, target) {
+    if (!lane) return false;
+    target = this.wrap(target);
+    lane.ensurePath();
+    if (which === "end") return this.reshapeLaneEnd(lane, target);
+    return this.reshapeLaneStart(lane, target);
+  }
+
+  _fullHeadPoint(lane) {
+    lane.ensurePath();
+    if (!lane.path.length) return gp(lane.x - 1, lane.y);
+    const p0 = lane.path[0];
+    let dx = -1;
+    let dy = 0;
+    if (lane.path.length > 1) {
+      const p1 = lane.path[1];
+      dx = Math.sign(p0.x - p1.x) || (p0.y === p1.y ? -1 : 0);
+      dy = Math.sign(p0.y - p1.y) || 0;
+      if (dx === 0 && dy === 0) {
+        dx = -1;
+        dy = 0;
+      }
+    }
+    return gp(p0.x + dx, p0.y + dy);
+  }
+
+  _fullTermPoint(lane) {
+    lane.ensurePath();
+    if (!lane.path.length) return gp(lane.x, lane.y);
+    if (lane.circular) return this._fullHeadPoint(lane);
+    const last = lane.path[lane.path.length - 1];
+    if (lane.path.length > 1) {
+      const prev = lane.path[lane.path.length - 2];
+      const dx = Math.sign(last.x - prev.x) || 1;
+      const dy = Math.sign(last.y - prev.y) || 0;
+      return gp(last.x + dx, last.y + dy);
+    }
+    return gp(last.x + 1, last.y);
+  }
+
+  /**
    * Drag end handle to a cell: shorten (if on existing path) or extend
    * following free cells. Stacking on start → circular tape loop.
    */
@@ -1174,9 +1325,12 @@ export class Score {
     if (!lane) return false;
     target = this.wrap(target);
     lane.ensurePath();
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
 
-    // Circular: drop end on start marker
-    if (gpEq(target, lane.headPoint) && lane.steps.length >= 1) {
+    // Circular: drop end on start marker (full path head)
+    const fullHead = this._fullHeadPoint(lane);
+    if (gpEq(target, fullHead) && lane.steps.length >= 1) {
       lane.circular = true;
       return true;
     }
@@ -1189,10 +1343,8 @@ export class Score {
       return true;
     }
 
-    // Adjacent grow from last step (or from current term if free trail)
-    const last = lane.path[lane.path.length - 1];
-    const d = toroidalDelta(last, target, this.gridW, this.gridH);
     // Walk Manhattan path from last toward target, appending free cells
+    const last = lane.path[lane.path.length - 1];
     let cx = last.x;
     let cy = last.y;
     let guard = 0;
@@ -1205,7 +1357,7 @@ export class Score {
         cy = wrapCoord(cy + Math.sign(td.dy), this.gridH);
       } else break;
       const np = gp(cx, cy);
-      if (gpEq(np, lane.headPoint) && lane.steps.length >= 1) {
+      if (gpEq(np, this._fullHeadPoint(lane)) && lane.steps.length >= 1) {
         lane.circular = true;
         return true;
       }
@@ -1217,6 +1369,8 @@ export class Score {
       lane.addStep(np);
       lane.circular = false;
     }
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
     return true;
   }
 
@@ -1228,8 +1382,11 @@ export class Score {
     if (!lane) return false;
     target = this.wrap(target);
     lane.ensurePath();
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
 
-    if (gpEq(target, lane.termPoint) && !lane.circular && lane.steps.length >= 1) {
+    const fullTerm = this._fullTermPoint(lane);
+    if (gpEq(target, fullTerm) && !lane.circular && lane.steps.length >= 1) {
       lane.circular = true;
       return true;
     }
@@ -1257,7 +1414,7 @@ export class Score {
         cy = wrapCoord(cy + Math.sign(td.dy), this.gridH);
       } else break;
       const np = gp(cx, cy);
-      if (gpEq(np, lane.termPoint)) {
+      if (gpEq(np, this._fullTermPoint(lane))) {
         lane.circular = true;
         return true;
       }
@@ -1268,10 +1425,8 @@ export class Score {
       }
       newCells.push(np);
     }
-    // Prepend path cells (reverse order of walk = order from new start to old first)
+    // Prepend path cells (walk was outward; reverse so order is new-start → old-first)
     if (newCells.length) {
-      // walk went from first toward target, so newCells[0] is next to first...
-      // actually we want cells from target back to first
       newCells.reverse();
       for (const c of newCells) {
         const step = new Step();
@@ -1508,13 +1663,16 @@ export const ProjectFormat = {
           readFxMod(score, tokens, number);
           break;
         case "pathroute":
-          readPathRoute(score, tokens, number);
+          // Legacy path sends ignored
           break;
         case "fxroute":
-          readFxRoute(score, tokens, number);
+          // Legacy chains ignored
           break;
         case "auto":
           readAutoNode(score, tokens, number);
+          break;
+        case "fxtrig":
+          readFxTrig(score, tokens, number);
           break;
         default:
           throw fail(number, "unknown keyword " + tokens[0]);
@@ -1627,31 +1785,31 @@ function writeFx(fx) {
 function writeFxWorld(lines, score) {
   for (const m of score.fxModules || []) {
     let s = "fxmod " + m.type + " " + m.x + " " + m.y + " id=" + m.id;
+    if (m.on) s += " on=1";
     for (const [k, v] of Object.entries(m.params || {})) s += " " + k + "=" + F(v);
     lines.push(s);
   }
-  for (const r of score.pathRoutes || []) {
-    lines.push(
-      "pathroute lane=" + r.laneIndex +
-      " from=" + r.fromStep +
-      " to=" + r.toStep +
-      " target=" + r.targetFxId +
-      " amount=" + F(r.amount) +
-      " id=" + r.id,
-    );
+  for (const t of score.fxTriggers || []) {
+    let s = "fxtrig " + t.x + " " + t.y +
+      " kind=" + t.kind +
+      " id=" + t.id;
+    if (t.kind === "chan") {
+      s += " channel=" + (t.channel | 0) +
+        " param=" + t.paramKey +
+        " value=" + F(t.value);
+    } else {
+      if (t.targetFxId) s += " target=" + t.targetFxId;
+      if (t.kind === "param") {
+        s += " param=" + t.paramKey + " value=" + F(t.value);
+      }
+    }
+    lines.push(s);
   }
-  for (const r of score.fxRoutes || []) {
-    lines.push(
-      "fxroute from=" + r.fromFxId +
-      " to=" + r.toFxId +
-      " amount=" + F(r.amount) +
-      " id=" + r.id,
-    );
-  }
+  // Legacy autoNodes (migrate on read; still write if present)
   for (const a of score.autoNodes || []) {
     lines.push(
-      "auto " + a.x + " " + a.y +
-      " target=" + a.targetFxId +
+      "fxtrig " + a.x + " " + a.y +
+      " kind=param target=" + a.targetFxId +
       " param=" + a.paramKey +
       " value=" + F(a.value) +
       " id=" + a.id,
@@ -1664,25 +1822,58 @@ function readFxMod(score, tokens, number) {
   const x = readInt(arg(tokens, 2, number));
   const y = readInt(arg(tokens, 3, number));
   let id = null;
+  let on = false;
   const params = {};
   for (let i = 4; i < tokens.length; i++) {
     const [k, v] = split(tokens[i]);
     if (k === "id") id = v;
+    else if (k === "on") on = v === "1" || v === "true";
     else params[k] = readFloat(v);
   }
   if (!score.fxModules) score.fxModules = [];
-  const isPat = type === "pat+" || type === "pat-" || type === "patgo" || type === "pan";
+  const isPat = type === "pat+" || type === "pat-" || type === "patgo";
+  const isWide = type === "delay" || type === "reverb" || type === "pan";
   const isTall = type === "delay" || type === "reverb";
   score.fxModules.push({
     id: id || ("fx-" + score.fxModules.length),
     type,
     x,
     y,
-    w: isPat || type === "pan" ? 2 : 3,
+    w: isPat ? 2 : (isWide ? 4 : 3),
     h: isTall ? 3 : 2,
+    on,
     params: Object.keys(params).length
       ? params
       : (type.startsWith("pat") ? (type === "patgo" ? { n: 0 } : {}) : { mix: 0.35 }),
+  });
+}
+
+function readFxTrig(score, tokens, number) {
+  const x = readInt(arg(tokens, 1, number));
+  const y = readInt(arg(tokens, 2, number));
+  let kind = "param";
+  let targetFxId = "";
+  let channel = 0;
+  let paramKey = "mix";
+  let value = 0;
+  let id = null;
+  for (let i = 3; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "kind") kind = v;
+    else if (k === "target") targetFxId = v;
+    else if (k === "channel") channel = readInt(v);
+    else if (k === "param") paramKey = v;
+    else if (k === "value") value = readFloat(v);
+    else if (k === "id") id = v;
+  }
+  if (!score.fxTriggers) score.fxTriggers = [];
+  score.fxTriggers.push({
+    id: id || ("tr-" + score.fxTriggers.length),
+    x, y, kind,
+    targetFxId: kind === "chan" ? null : targetFxId,
+    channel: kind === "chan" ? channel : 0,
+    paramKey: (kind === "param" || kind === "chan") ? paramKey : null,
+    value: (kind === "param" || kind === "chan") ? value : 0,
   });
 }
 
@@ -1722,10 +1913,12 @@ function readFxRoute(score, tokens) {
 }
 
 function readAutoNode(score, tokens, number) {
+  // Legacy auto → param trigger
   const a = {
     id: "au",
     x: readInt(arg(tokens, 1, number)),
     y: readInt(arg(tokens, 2, number)),
+    kind: "param",
     targetFxId: "",
     paramKey: "mix",
     value: 0,
@@ -1737,8 +1930,8 @@ function readAutoNode(score, tokens, number) {
     else if (k === "value") a.value = readFloat(v);
     else if (k === "id") a.id = v;
   }
-  if (!score.autoNodes) score.autoNodes = [];
-  score.autoNodes.push(a);
+  if (!score.fxTriggers) score.fxTriggers = [];
+  score.fxTriggers.push(a);
 }
 
 function readLane(score, tokens, number, links) {

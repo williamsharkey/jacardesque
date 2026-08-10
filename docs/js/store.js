@@ -8,6 +8,9 @@ const PREFIX = "jacquardesque:v4:score:";
 const INDEX_KEY = "jacquardesque:v4:index";
 const CURRENT_KEY = "jacquardesque:v4:current";
 const SEEDED_KEY = "jacquardesque:v4:seeded";
+/** Bump to rewrite factory sketch bodies (user-named sketches stay). */
+const FACTORY_REV_KEY = "jacquardesque:v4:factoryRev";
+const FACTORY_REV = "showcase-10-v1";
 
 const ALL_FACTORY = [...FACTORY_SKETCHES, ...FX_FACTORY_SKETCHES];
 
@@ -77,9 +80,27 @@ export class ProjectStore {
       }
       this._writeIndex(ids);
       localStorage.setItem(SEEDED_KEY, "1");
+      localStorage.setItem(FACTORY_REV_KEY, FACTORY_REV);
       this.name = ids[0];
       localStorage.setItem(CURRENT_KEY, this.name);
       return this.load();
+    }
+
+    // Refresh factory bodies when FACTORY_REV changes (keeps user sketches).
+    if (localStorage.getItem(FACTORY_REV_KEY) !== FACTORY_REV) {
+      for (const entry of ALL_FACTORY) {
+        const project = entry.build();
+        localStorage.setItem(this.key(entry.id), ProjectFormat.write(project));
+      }
+      // Ensure factory ids remain in the index (prepend any missing).
+      const slots = this.slots();
+      const factoryIds = ALL_FACTORY.map((s) => s.id);
+      const merged = [
+        ...factoryIds,
+        ...slots.filter((id) => !factoryIds.includes(id)),
+      ];
+      this._writeIndex(merged);
+      localStorage.setItem(FACTORY_REV_KEY, FACTORY_REV);
     }
 
     this.slots();

@@ -243,6 +243,29 @@ button.lock-label:hover {
   pointer-events: none;
 }
 
+/* Tick marks for param values dragged onto the grid */
+.value-bar-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.value-bar-tick {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 2px;
+  margin-left: -1px;
+  background: #22d3ee;
+  box-shadow: 0 0 4px rgba(34, 211, 238, 0.7);
+  pointer-events: none;
+}
+
+.value-bar-ticks.hidden {
+  display: none;
+}
+
 .value-bar.active .value-bar-fill {
   background: var(--fill-active);
 }
@@ -594,6 +617,123 @@ button.lock-label:hover {
 .piano-key.black.active {
   background: linear-gradient(180deg, #a78bfa 0%, #6d28d9 100%);
   border-color: #c4b5fd;
+}
+
+/* Fixed bottom keyboard dock — drag notes onto lanes */
+.dock-keyboard {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: min(720px, calc(100% - 24px));
+  padding: 8px 10px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.dock-lane-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.dock-lane-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label);
+  min-width: 120px;
+  text-align: center;
+}
+
+.dock-keys {
+  position: relative;
+  height: 52px;
+  user-select: none;
+  touch-action: none;
+}
+
+.dock-whites {
+  display: flex;
+  height: 100%;
+  gap: 1px;
+}
+
+.dock-blacks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 58%;
+  pointer-events: none;
+}
+
+.dock-key {
+  appearance: none;
+  border: 1px solid #2a2a32;
+  padding: 0;
+  margin: 0;
+  cursor: grab;
+  font-size: 9px;
+  font-weight: 600;
+  color: #3f3f46;
+}
+
+.dock-key.white {
+  flex: 1;
+  min-width: 0;
+  background: linear-gradient(180deg, #f4f4f0 0%, #d8d8d0 100%);
+  border-radius: 0 0 3px 3px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 3px;
+}
+
+.dock-key.white:hover {
+  background: #fff;
+}
+
+.dock-key.black {
+  position: absolute;
+  width: 14px;
+  height: 100%;
+  background: linear-gradient(180deg, #3f3f46 0%, #18181b 100%);
+  border-radius: 0 0 2px 2px;
+  pointer-events: auto;
+  z-index: 1;
+  color: transparent;
+}
+
+.dock-key.black:hover {
+  background: #52525b;
+}
+
+.dock-note-ghost {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #fbbf24;
+  color: #1c1917;
+  font: 700 12px system-ui, sans-serif;
+  opacity: 0.5;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.dock-note-ghost.valid {
+  opacity: 1;
+  background: #86efac;
+}
+
+.score-scroll {
+  padding-bottom: 90px;
 }
 
 @media (max-width: 720px) {

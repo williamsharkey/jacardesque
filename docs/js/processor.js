@@ -680,14 +680,10 @@ class FxModuleRuntime {
   process(n, sampleRate) {
     if (!this.engine) return; // pattern control modules are silent
     const p = this.params;
+    // Grid pedals are path-sends / chains: dry already lives on the main bus.
+    // Output wet only (mix scales wet level) so we never double dry.
     if (this.type === "delay") {
       this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p, sampleRate);
-      // dry mix through
-      const mix = clamp01(p.mix ?? 0.35);
-      for (let i = 0; i < n; i++) {
-        this.outL[i] += this.inL[i] * (1 - mix);
-        this.outR[i] += this.inR[i] * (1 - mix);
-      }
     } else if (this.type === "reverb") {
       const mono = new Float32Array(n);
       for (let i = 0; i < n; i++) mono[i] = (this.inL[i] + this.inR[i]) * 0.5;
@@ -696,8 +692,25 @@ class FxModuleRuntime {
       this.engine.process(mono, wetL, wetR, n, sampleRate, p.size ?? 0.5, p.damp ?? 0.4, 1);
       const mix = clamp01(p.mix ?? 0.3);
       for (let i = 0; i < n; i++) {
-        this.outL[i] = this.inL[i] * (1 - mix) + wetL[i] * mix;
-        this.outR[i] = this.inR[i] * (1 - mix) + wetR[i] * mix;
+        this.outL[i] = wetL[i] * mix;
+        this.outR[i] = wetR[i] * mix;
+      }
+    } else if (this.type === "distort" || this.type === "filter" || this.type === "pan") {
+      // These engines mix dry+wet internally; strip dry so only wet delta remains
+      // would need engine changes. Instead: process into temps then wet = out - dry*(1-mix)...
+      // Simpler: treat mix as wet amount and zero dry contribution by processing full wet.
+      this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p);
+      // Engine already wrote dry*(1-mix)+wet*mix. Convert to wet-only path return:
+      // out = dry*(1-mix)+wet*mix  →  we want wet*mix ≈ out - dry*(1-mix)
+      const mix = clamp01(
+        this.type === "pan" ? 1 : (p.mix ?? (this.type === "filter" ? 1 : 0.4)),
+      );
+      if (this.type !== "pan" && mix < 1) {
+        const dryKeep = 1 - mix;
+        for (let i = 0; i < n; i++) {
+          this.outL[i] -= this.inL[i] * dryKeep;
+          this.outR[i] -= this.inR[i] * dryKeep;
+        }
       }
     } else {
       this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p);
@@ -709,90 +722,149 @@ class GridFxGraph {
   constructor(sampleRate) {
     this.sampleRate = sampleRate;
     this.modules = new Map(); // id -> FxModuleRuntime
-    this.pathOpens = [];
-    this.chains = [];
+    this.order = []; // module ids in insert order
+    this.insertMode = true;
     this.enabled = false;
+    this._workL = null;
+    this._workR = null;
+    this._tmpL = null;
+    this._tmpR = null;
   }
 
   setGraph(msg) {
     if (!msg || !msg.modules) {
       this.enabled = false;
+      this.order = [];
       return;
     }
-    // Pattern-control modules are not audio engines.
     const audioMods = (msg.modules || []).filter(
       (m) => m.type !== "pat+" && m.type !== "pat-" && m.type !== "patgo",
     );
     this.enabled = audioMods.length > 0;
+    this.insertMode = msg.insertMode !== false;
+    this.order = [];
     const seen = new Set();
     for (const m of audioMods) {
       seen.add(m.id);
+      this.order.push(m.id);
       let rt = this.modules.get(m.id);
       if (!rt || rt.type !== m.type) {
         rt = new FxModuleRuntime(m.id, m.type, this.sampleRate);
         this.modules.set(m.id, rt);
       }
       rt.params = m.params || {};
+      rt.targetOn = !!m.on;
+      if (rt.mixGain == null) rt.mixGain = rt.targetOn ? 1 : 0;
     }
     for (const id of [...this.modules.keys()]) {
       if (!seen.has(id)) this.modules.delete(id);
     }
-    this.pathOpens = msg.pathOpens || [];
-    this.chains = msg.chains || [];
+  }
+
+  _ensureWork(n) {
+    if (!this._workL || this._workL.length < n) {
+      this._workL = new Float32Array(n);
+      this._workR = new Float32Array(n);
+      this._tmpL = new Float32Array(n);
+      this._tmpR = new Float32Array(n);
+    }
   }
 
   /**
-   * channelMono[0..7], dryL/R already filled.
-   * Adds wet output into wetL/wetR.
+   * Insert mode: serial process dryL/R through ON pedals (mix→0 when off).
+   * ~10-sample linear ramp on engage/bypass to avoid clicks.
+   * Result written back into dryL/R; wet left unused for grid inserts.
    */
   process(channelMono, dryL, dryR, wetL, wetR, n) {
     if (!this.enabled) return;
-    for (const rt of this.modules.values()) rt.ensure(n);
+    if (!this.insertMode) return;
 
-    // Path opens: feed channel bus into module inputs when window is live.
-    for (const open of this.pathOpens) {
-      const ch = Math.min(8, Math.max(1, open.channel | 1)) - 1;
-      const bus = channelMono[ch];
-      const rt = this.modules.get(open.targetFxId);
-      if (!bus || !rt) continue;
-      const amt = open.amount ?? 0.5;
+    this._ensureWork(n);
+    const workL = this._workL;
+    const workR = this._workR;
+    const tmpL = this._tmpL;
+    const tmpR = this._tmpR;
+    for (let i = 0; i < n; i++) {
+      workL[i] = dryL[i];
+      workR[i] = dryR[i];
+    }
+
+    const RAMP = 10; // samples
+    for (const id of this.order) {
+      const rt = this.modules.get(id);
+      if (!rt) continue;
+      rt.ensure(n);
+
+      // Target engage amount: 1 when on, 0 when off (then scale by param mix)
+      const want = rt.targetOn ? 1 : 0;
+      let g = rt.mixGain;
+      const step = (want - g) / RAMP;
+
+      // Feed current chain signal into module
       for (let i = 0; i < n; i++) {
-        const s = bus[i] * amt;
-        rt.inL[i] += s;
-        rt.inR[i] += s;
+        rt.inL[i] = workL[i];
+        rt.inR[i] = workR[i];
+      }
+      // Clear outs then process full wet engine
+      rt.outL.fill(0, 0, n);
+      rt.outR.fill(0, 0, n);
+
+      // Temporarily force full wet capture for insert blend
+      const savedMix = rt.params.mix;
+      const p = { ...rt.params, mix: 1 };
+      rt.params = p;
+      this._processInsertWet(rt, n);
+      rt.params = { ...rt.params, mix: savedMix };
+
+      const userMix = clamp01(savedMix ?? 0.35);
+      for (let i = 0; i < n; i++) {
+        if (Math.abs(want - g) > 1e-6) {
+          g += step;
+          if ((step > 0 && g > want) || (step < 0 && g < want)) g = want;
+        }
+        // effective wet amount = engage ramp * user mix
+        const m = g * userMix;
+        // out = dry*(1-m) + wet*m  where wet is fully processed signal
+        // For delay/reverb engines that already bake mix, we forced mix=1 so out is wet.
+        const wetL_i = rt.outL[i];
+        const wetR_i = rt.outR[i];
+        tmpL[i] = workL[i] * (1 - m) + wetL_i * m;
+        tmpR[i] = workR[i] * (1 - m) + wetR_i * m;
+      }
+      rt.mixGain = g;
+      for (let i = 0; i < n; i++) {
+        workL[i] = tmpL[i];
+        workR[i] = tmpR[i];
       }
     }
 
-    // Process modules; apply fx→fx chains as extra inputs before process.
-    // One pass topo: process in map order then chain outputs into targets.
-    // Two-pass: process all, then mix chain into wet (simple series via second buffer).
-    // Better: process in order, chains feed input of next before its process.
-    const order = [...this.modules.values()];
-    // First process all from path inputs only
-    for (const rt of order) rt.process(n, this.sampleRate);
-
-    // Chains: take output of from, feed to to input, re-process to (lightweight series)
-    for (const c of this.chains) {
-      const from = this.modules.get(c.from);
-      const to = this.modules.get(c.to);
-      if (!from || !to) continue;
-      const amt = c.amount ?? 1;
-      for (let i = 0; i < n; i++) {
-        to.inL[i] += from.outL[i] * amt;
-        to.inR[i] += from.outR[i] * amt;
-      }
-      // Clear out and re-process with chained input
-      to.outL.fill(0, 0, n);
-      to.outR.fill(0, 0, n);
-      to.process(n, this.sampleRate);
+    for (let i = 0; i < n; i++) {
+      dryL[i] = workL[i];
+      dryR[i] = workR[i];
     }
+  }
 
-    // Sum all module outputs to wet
-    for (const rt of order) {
+  _processInsertWet(rt, n) {
+    const p = rt.params;
+    if (rt.type === "delay") {
+      // Engine applies its own mix — we set mix=1 so out is wet only
+      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
+    } else if (rt.type === "reverb") {
+      const mono = new Float32Array(n);
+      for (let i = 0; i < n; i++) mono[i] = (rt.inL[i] + rt.inR[i]) * 0.5;
+      const wetL = new Float32Array(n);
+      const wetR = new Float32Array(n);
+      rt.engine.process(mono, wetL, wetR, n, this.sampleRate, p.size ?? 0.5, p.damp ?? 0.4, 1);
       for (let i = 0; i < n; i++) {
-        wetL[i] += rt.outL[i];
-        wetR[i] += rt.outR[i];
+        rt.outL[i] = wetL[i];
+        rt.outR[i] = wetR[i];
       }
+    } else if (rt.type === "distort" || rt.type === "filter") {
+      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, { ...p, mix: 1 });
+    } else if (rt.type === "pan") {
+      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p);
+    } else if (rt.engine) {
+      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
     }
   }
 }

@@ -15,13 +15,13 @@ import {
 } from "./core.js";
 import {
   createFxModule,
-  createPathRoute,
-  createFxRoute,
-  createAutoNode,
+  createFxTrigger,
   ensureFxLists,
   findFxAt,
+  findTriggerAt,
   removeFxModule,
   FxTypes,
+  triggerAdjacentToAnyLane,
 } from "./fx-model.js";
 
 export class ScoreEditor {
@@ -36,6 +36,29 @@ export class ScoreEditor {
     this._notePitch = 60;
     this._noteLength = 1;
     this.selectedFxId = null;
+    this.selectedAutoId = null; // selected trigger id
+    this.selectedPathId = null;
+    this.focusLaneIndex = 0; // dock keyboard target lane
+  }
+
+  clearObjectSelection() {
+    this.selectedFxId = null;
+    this.selectedAutoId = null;
+    this.selectedPathId = null;
+  }
+
+  get focusLane() {
+    const lanes = this.score.channelLanes;
+    if (!lanes.length) return null;
+    const i = ((this.focusLaneIndex % lanes.length) + lanes.length) % lanes.length;
+    return lanes[i];
+  }
+
+  cycleFocusLane(delta) {
+    const n = this.score.channelLanes.length;
+    if (!n) return;
+    this.focusLaneIndex = ((this.focusLaneIndex + delta) % n + n) % n;
+    this.onTouched?.();
   }
 
   get score() {
@@ -76,6 +99,7 @@ export class ScoreEditor {
     if (!point) return false;
     ensureFxLists(this.score);
     if (findFxAt(this.score, point)) return false;
+    if (findTriggerAt(this.score, point)) return false;
     const cell = this.score.at(point);
     if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
     return this.score.placementLane(point) != null;
@@ -86,12 +110,15 @@ export class ScoreEditor {
     if (!point) return false;
     ensureFxLists(this.score);
     if (findFxAt(this.score, point)) return false;
+    if (findTriggerAt(this.score, point)) return false;
     const cell = this.score.at(point);
     if (cell.kind !== CellKind.Empty) return false;
     return this.score.isFree(point);
   }
 
   menuModeAt(point) {
+    if (findTriggerAt(this.score, point)) return null;
+    if (findFxAt(this.score, point)) return null;
     if (this.canPlaceTileAt(point)) return "lane";
     if (this.canOpenGroundMenu(point)) return "ground";
     return null;
@@ -123,6 +150,11 @@ export class ScoreEditor {
       return true;
     }
 
+    // Freeform lane from ground L/U/R drag path
+    if (spec.kind === "LANE_PATH" && spec.path?.length) {
+      return this.createLaneFromPath(spec.path);
+    }
+
     // FX pedals land on free ground (not on lane cells).
     if (spec.kind === "FX") {
       ensureFxLists(this.score);
@@ -139,6 +171,7 @@ export class ScoreEditor {
       const mod = createFxModule(type, point.x, point.y);
       if (spec.n != null && mod.params) mod.params.n = spec.n | 0;
       this.score.fxModules.push(mod);
+      this.clearObjectSelection();
       this.selectedFxId = mod.id;
       this.commit();
       return true;
@@ -186,38 +219,68 @@ export class ScoreEditor {
     return true;
   }
 
-  placeAutoNode(targetFxId, paramKey, value, point) {
+  /**
+   * Place ON / OFF / param / chan trigger on free ground.
+   * Returns false if cell is occupied or on a lane body.
+   */
+  placeTrigger({ kind, targetFxId, channel, paramKey, value, point }) {
     ensureFxLists(this.score);
-    // Replace existing auto at same cell
-    this.score.autoNodes = this.score.autoNodes.filter(
-      (a) => !(a.x === point.x && a.y === point.y),
+    if (!point) return false;
+    if (findFxAt(this.score, point)) return false;
+    const cell = this.score.at(point);
+    if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head ||
+        cell.kind === CellKind.Term || cell.kind === CellKind.Rail) {
+      return false;
+    }
+    // Replace any trigger on same cell
+    this.score.fxTriggers = this.score.fxTriggers.filter(
+      (t) => !(t.x === point.x && t.y === point.y),
     );
-    this.score.autoNodes.push(createAutoNode({
+    const trig = createFxTrigger({
       x: point.x,
       y: point.y,
+      kind,
+      targetFxId,
+      channel,
+      paramKey,
+      value,
+    });
+    this.score.fxTriggers.push(trig);
+    this.clearObjectSelection();
+    this.selectedAutoId = trig.id;
+    this.setCursor(point);
+    this.commit();
+    return true;
+  }
+
+  /** @deprecated */
+  placeAutoNode(targetFxId, paramKey, value, point) {
+    return this.placeTrigger({
+      kind: "param",
       targetFxId,
       paramKey,
       value,
-    }));
-    this.commit();
+      point,
+    });
   }
 
-  placePathRoute(laneIndex, fromStep, toStep, targetFxId, amount = 0.55) {
+  placePathRoute() { /* removed */ }
+  placeFxRoute() { /* removed */ }
+
+  deleteSelectedAuto() {
     ensureFxLists(this.score);
-    this.score.pathRoutes.push(createPathRoute({
-      laneIndex,
-      fromStep,
-      toStep,
-      targetFxId,
-      amount,
-    }));
+    const id = this.selectedAutoId;
+    if (!id) return false;
+    const n = this.score.fxTriggers.length;
+    this.score.fxTriggers = this.score.fxTriggers.filter((t) => t.id !== id);
+    if (this.score.fxTriggers.length === n) return false;
+    this.selectedAutoId = null;
     this.commit();
+    return true;
   }
 
-  placeFxRoute(fromFxId, toFxId, amount = 1) {
-    ensureFxLists(this.score);
-    this.score.fxRoutes.push(createFxRoute({ fromFxId, toFxId, amount }));
-    this.commit();
+  deleteSelectedPath() {
+    return false;
   }
 
   deleteAtCursor() {
@@ -227,16 +290,48 @@ export class ScoreEditor {
     if (fx) {
       removeFxModule(this.score, fx.id);
       if (this.selectedFxId === fx.id) this.selectedFxId = null;
+      this.selectedAutoId = null;
       this.commit();
       return;
     }
-    const auto = this.score.autoNodes.find((a) => a.x === point.x && a.y === point.y);
-    if (auto) {
-      this.score.autoNodes = this.score.autoNodes.filter((a) => a.id !== auto.id);
+    const trig = findTriggerAt(this.score, point);
+    if (trig) {
+      this.score.fxTriggers = this.score.fxTriggers.filter((t) => t.id !== trig.id);
+      if (this.selectedAutoId === trig.id) this.selectedAutoId = null;
       this.commit();
       return;
     }
     this.delete();
+  }
+
+  /** Place note at grid point if it's a free/valid lane step. */
+  placeNoteAt(point, note) {
+    if (!point) return false;
+    this.setCursor(point);
+    this._notePitch = note;
+    return this.put({ kind: "NOTE", note });
+  }
+
+  /** Preview pitch on focus lane channel. */
+  auditionNote(note) {
+    const lane = this.focusLane || this.selectedLane;
+    const ch = lane?.channel?.channel ?? this.channel ?? 1;
+    this.preview(note, ch);
+    this._notePitch = note;
+  }
+
+  isValidTriggerCell(point) {
+    ensureFxLists(this.score);
+    if (!point) return false;
+    if (findFxAt(this.score, point)) return false;
+    if (findTriggerAt(this.score, point)) return true; // replace ok
+    const cell = this.score.at(point);
+    if (cell.kind !== CellKind.Empty) return false;
+    return this.score.isFree(point);
+  }
+
+  triggerLooksLive(trig) {
+    return triggerAdjacentToAnyLane(this.score, trig);
   }
 
   placeNote() {
@@ -282,6 +377,52 @@ export class ScoreEditor {
     const point = this.score.findFreeRow(this.getCursor(), steps);
     this.score.addLane(point.x, point.y, new ChannelTile(this.channel, 16, ""), steps);
     this.commit();
+  }
+
+  /**
+   * Create a channel lane whose step path follows freeform grid cells.
+   * path[0] is first step; head marker sits before it.
+   */
+  createLaneFromPath(pathPoints) {
+    if (!pathPoints?.length) return false;
+    const pts = [];
+    const seen = new Set();
+    for (const raw of pathPoints) {
+      const p = this.score.wrap(raw);
+      const key = p.x + "," + p.y;
+      if (seen.has(key)) continue;
+      if (!this.score.isFree(p) && pts.length) break;
+      if (!this.score.isFree(p) && !pts.length) continue;
+      seen.add(key);
+      pts.push(gp(p.x, p.y));
+    }
+    if (!pts.length) return false;
+    // Need at least one step; if only origin, extend right if free
+    if (pts.length === 1) {
+      const next = this.score.wrap(gp(pts[0].x + 1, pts[0].y));
+      if (this.score.isFree(next)) pts.push(next);
+      else {
+        const n2 = this.score.wrap(gp(pts[0].x, pts[0].y + 1));
+        if (this.score.isFree(n2)) pts.push(n2);
+      }
+    }
+    if (pts.length < 1) return false;
+
+    const lane = this.score.addLane(
+      pts[0].x,
+      pts[0].y,
+      new ChannelTile(this.channel, 16, ""),
+      pts.length,
+    );
+    lane.path = pts.map((p) => gp(p.x, p.y));
+    lane.syncOrigin();
+    lane.circular = false;
+    lane.activeFrom = 0;
+    lane.activeTo = lane.steps.length;
+    this.setCursor(lane.headPoint);
+    this.focusLaneIndex = this.score.channelLanes.indexOf(lane);
+    this.commit();
+    return true;
   }
 
   resizeLane(delta) {

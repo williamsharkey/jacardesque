@@ -1,17 +1,20 @@
-// Grid-native FX world: pedal modules, path sends, chains, automation nodes.
-// Effects are objects on the plane — not a hidden global menu.
+// Grid FX: insert pedals with adjacency-triggered ON/OFF and param pads.
+// Channel instrument params use the same adjacency chips (kind "chan").
+// No path sends, no cables — drag pads/values next to a lane cell.
+
+import { ParamTargets, PatchBank } from "./core.js";
 
 let _id = 1;
 export function newFxId(prefix = "fx") {
   return prefix + "-" + (_id++) + "-" + (Math.random() * 1e6 | 0).toString(36);
 }
 
-/** Pedal types available on the grid. */
+/** Pedal types available on the grid (audio = inserts; pat* = pattern control). */
 export const FxTypes = {
   delay: {
     label: "DLY",
     name: "Delay",
-    w: 3,
+    w: 4,
     h: 3,
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 0.35 },
@@ -23,7 +26,7 @@ export const FxTypes = {
   reverb: {
     label: "RVB",
     name: "Reverb",
-    w: 3,
+    w: 4,
     h: 3,
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 0.3 },
@@ -55,14 +58,14 @@ export const FxTypes = {
   pan: {
     label: "PAN",
     name: "Pan",
-    w: 2,
+    w: 3,
     h: 2,
     params: [
+      { key: "mix", label: "Mix", min: 0, max: 1, def: 1 },
       { key: "pan", label: "Pan", min: -1, max: 1, def: 0 },
       { key: "width", label: "Wid", min: 0, max: 1, def: 0.5 },
     ],
   },
-  // Pattern transport objects — fire when a runner's column hits this module.
   "pat+": {
     label: "P+",
     name: "Pattern +",
@@ -85,7 +88,6 @@ export const FxTypes = {
     w: 2,
     h: 2,
     params: [
-      // 0-based pattern index; UI shows 1-based. Always modulo slot count.
       { key: "n", label: "To #", min: 0, max: 63, def: 0 },
     ],
     patternOp: "jump",
@@ -112,6 +114,8 @@ export function createFxModule(type, x, y, id = null) {
     w: def.w,
     h: def.h,
     params: defaultParams(type),
+    /** Insert engaged. When false, audio is bypassed (effective mix → 0). */
+    on: false,
   };
 }
 
@@ -124,99 +128,32 @@ export function patternOpOf(mod) {
 }
 
 /**
- * Collect pattern-control fires for this frame's playhead columns.
- * Returns list of { op: 'inc'|'dec'|'jump', n?: number, id } unique per module per column hit.
+ * Trigger pad on free ground (not on a lane cell).
+ * kind: "on" | "off" | "param" | "chan"
+ *   on/off/param → FX insert
+ *   chan → instrument patch param for a channel
+ * Fires when orthogonally adjacent to a playhead-lit step cell.
  */
-export function collectPatternTriggers(score, runners, lastFired) {
-  ensureFxLists(score);
-  const triggers = [];
-  if (!runners?.length) return triggers;
-
-  const cols = new Map(); // col -> true
-  for (const r of runners) {
-    if (r.playingLane != null && r.playingStep >= 0) {
-      cols.set(r.playingLane.x + r.playingStep, true);
-    }
-  }
-
-  for (const mod of score.fxModules) {
-    const op = patternOpOf(mod);
-    if (!op) continue;
-    // Fire when playhead column intersects the module's x span
-    let hit = false;
-    for (let dx = 0; dx < mod.w; dx++) {
-      if (cols.has(mod.x + dx)) {
-        hit = true;
-        break;
-      }
-    }
-    if (!hit) continue;
-    // Debounce: only once while continuously overlapping the same column set key
-    const key = mod.id + "@" + [...cols.keys()].sort((a, b) => a - b).join(",");
-    if (lastFired && lastFired.get(mod.id) === key) continue;
-    if (lastFired) lastFired.set(mod.id, key);
-    triggers.push({
-      op,
-      n: Math.round(mod.params?.n ?? 0),
-      id: mod.id,
-      key,
-    });
-  }
-  return triggers;
-}
-
-/**
- * Path send: while a runner is on lane steps [fromStep, toStep],
- * that channel's dry audio is also fed into targetFx.
- * Visual "pull-off" from the path into a pedal.
- */
-export function createPathRoute({
-  laneIndex = 0,
-  fromStep = 0,
-  toStep = 4,
-  targetFxId,
-  amount = 0.55,
-  id = null,
-}) {
-  return {
-    id: id || newFxId("pr"),
-    laneIndex: laneIndex | 0,
-    fromStep: Math.max(0, fromStep | 0),
-    toStep: Math.max(0, toStep | 0),
-    targetFxId,
-    amount: Math.min(1, Math.max(0, amount)),
-  };
-}
-
-/** Pedal → pedal chain cable. */
-export function createFxRoute({ fromFxId, toFxId, amount = 1, id = null }) {
-  return {
-    id: id || newFxId("fr"),
-    fromFxId,
-    toFxId,
-    amount: Math.min(1, Math.max(0, amount)),
-  };
-}
-
-/**
- * Automation node: when any runner's playhead is at grid column x
- * (lane step cell x === node.x), set targetFx.param = value for that instant.
- */
-export function createAutoNode({
+export function createFxTrigger({
   x,
   y,
-  targetFxId,
-  paramKey,
-  value,
+  kind,
+  targetFxId = null,
+  channel = 0,
+  paramKey = null,
+  value = 0,
   id = null,
 }) {
+  const k = (kind === "off" || kind === "param" || kind === "chan") ? kind : "on";
   return {
-    id: id || newFxId("au"),
+    id: id || newFxId("tr"),
     x: x | 0,
     y: y | 0,
-    targetFxId,
-    paramKey: String(paramKey || "mix"),
-    value: +value || 0,
+    kind: k,
+    targetFxId: k === "chan" ? null : targetFxId,
+    channel: k === "chan" ? Math.max(1, channel | 0) : 0,
+    paramKey: (k === "param" || k === "chan") ? String(paramKey || (k === "chan" ? "level" : "mix")) : null,
+    value: (k === "param" || k === "chan") ? +value || 0 : 0,
   };
 }
 
@@ -232,74 +169,39 @@ export function fxCenter(mod) {
   };
 }
 
-/** Serialize modular FX graph for the audio thread. */
-export function buildFxGraphMessage(project, runners, playing) {
-  const score = project.score;
-  const modules = (score.fxModules || []).map((m) => ({
-    id: m.id,
-    type: m.type,
-    params: { ...m.params },
-  }));
-
-  // Apply automation from current playheads (column-based).
-  if (playing && runners) {
-    const activeCols = new Set();
-    for (const r of runners) {
-      if (r.playingLane != null && r.playingStep >= 0) {
-        activeCols.add(r.playingLane.x + r.playingStep);
-      }
-    }
-    for (const auto of score.autoNodes || []) {
-      if (!activeCols.has(auto.x)) continue;
-      const mod = modules.find((m) => m.id === auto.targetFxId);
-      if (!mod) continue;
-      mod.params[auto.paramKey] = auto.value;
-    }
-  }
-
-  // Path opens: live while a runner is on that lane inside [fromStep, toStep].
-  const pathOpens = [];
-  if (playing && runners) {
-    for (const route of score.pathRoutes || []) {
-      const lane = score.lanes[route.laneIndex];
-      if (!lane) continue;
-      const channel = score.channelOf(lane);
-      let open = false;
-      for (const r of runners) {
-        if (r.playingLane !== lane) continue;
-        if (r.playingStep >= route.fromStep && r.playingStep <= route.toStep) {
-          open = true;
-          break;
-        }
-      }
-      if (open) {
-        pathOpens.push({
-          channel,
-          targetFxId: route.targetFxId,
-          amount: route.amount,
-        });
-      }
-    }
-  }
-
-  const chains = (score.fxRoutes || []).map((r) => ({
-    from: r.fromFxId,
-    to: r.toFxId,
-    amount: r.amount,
-  }));
-
-  return { modules, pathOpens, chains, tempo: project.tempo };
+/** Orthogonal adjacency (not diagonal). */
+export function isAdjacent(ax, ay, bx, by) {
+  const dx = Math.abs(ax - bx);
+  const dy = Math.abs(ay - by);
+  return (dx === 1 && dy === 0) || (dx === 0 && dy === 1);
 }
-
-// ---------------------------------------------------------------------------
-// Score helpers (attached when loading into score object)
-// ---------------------------------------------------------------------------
 
 export function ensureFxLists(score) {
   if (!score.fxModules) score.fxModules = [];
+  if (!score.fxTriggers) score.fxTriggers = [];
+  // Legacy lists kept empty for format compat
   if (!score.pathRoutes) score.pathRoutes = [];
   if (!score.fxRoutes) score.fxRoutes = [];
   if (!score.autoNodes) score.autoNodes = [];
+  // Migrate old autoNodes → param triggers once
+  if (score.autoNodes.length && !score._autoMigrated) {
+    for (const a of score.autoNodes) {
+      score.fxTriggers.push(createFxTrigger({
+        x: a.x,
+        y: a.y,
+        kind: "param",
+        targetFxId: a.targetFxId,
+        paramKey: a.paramKey,
+        value: a.value,
+        id: a.id,
+      }));
+    }
+    score.autoNodes = [];
+    score._autoMigrated = true;
+  }
+  for (const m of score.fxModules) {
+    if (m.on == null) m.on = false;
+  }
   return score;
 }
 
@@ -311,15 +213,367 @@ export function findFxAt(score, point) {
   return null;
 }
 
-export function findAutoAt(score, point) {
+export function findTriggerAt(score, point) {
   ensureFxLists(score);
-  return score.autoNodes.find((a) => a.x === point.x && a.y === point.y) || null;
+  return score.fxTriggers.find((t) => t.x === point.x && t.y === point.y) || null;
+}
+
+/** @deprecated use findTriggerAt */
+export function findAutoAt(score, point) {
+  return findTriggerAt(score, point);
+}
+
+export function findPathRouteAt() {
+  return null;
+}
+
+export function autoParamDef(score, autoOrTrig) {
+  if (!autoOrTrig) return null;
+  ensureFxLists(score);
+  const key = autoOrTrig.paramKey || "mix";
+
+  // Channel / instrument param
+  if (autoOrTrig.kind === "chan") {
+    const t = ParamTargets.parse(key);
+    if (t < 0) return { key, label: key, min: 0, max: 1, def: 0 };
+    return {
+      key,
+      label: ParamTargets.name(t),
+      min: ParamTargets.min(t),
+      max: ParamTargets.max(t),
+      def: 0,
+      target: t,
+    };
+  }
+
+  const mod = score.fxModules.find((m) => m.id === autoOrTrig.targetFxId);
+  if (!mod) return { key, label: key, min: 0, max: 1, def: 0 };
+  const def = FxTypes[mod.type];
+  const p = def?.params?.find((x) => x.key === key);
+  if (p) return p;
+  return { key, label: key, min: 0, max: 1, def: 0 };
 }
 
 export function removeFxModule(score, id) {
   ensureFxLists(score);
   score.fxModules = score.fxModules.filter((m) => m.id !== id);
-  score.pathRoutes = score.pathRoutes.filter((r) => r.targetFxId !== id);
-  score.fxRoutes = score.fxRoutes.filter((r) => r.fromFxId !== id && r.toFxId !== id);
-  score.autoNodes = score.autoNodes.filter((a) => a.targetFxId !== id);
+  score.fxTriggers = score.fxTriggers.filter((t) => t.targetFxId !== id);
+  score.pathRoutes = [];
+  score.fxRoutes = [];
+  score.autoNodes = [];
+}
+
+export function formatAutoShort(paramKey, value) {
+  if (paramKey === "pan") {
+    const a = Math.round(Math.min(1, Math.max(-1, value)) * 100);
+    if (a === 0) return "C";
+    return (a < 0 ? "L" : "R") + Math.abs(a);
+  }
+  if (paramKey === "n") return "#" + (Math.round(value) + 1);
+  if (paramKey === "time" || /time|decay|attack|release/i.test(paramKey)) {
+    const s = Number(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+    return s.startsWith("0") ? s.slice(1) : s;
+  }
+  if (value >= 0 && value <= 1) {
+    const s = Number(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+    return s.startsWith("0") ? s.slice(1) || "0" : s;
+  }
+  return String(Math.round(value * 100) / 100);
+}
+
+export function formatAutoLong(score, trig) {
+  ensureFxLists(score);
+  if (trig.kind === "chan") {
+    const pDef = autoParamDef(score, trig);
+    const label = pDef?.label || trig.paramKey;
+    let v = formatAutoShort(trig.paramKey, trig.value);
+    if (trig.paramKey === "moddecay" || trig.paramKey === "carattack" ||
+        trig.paramKey === "carrelease" || trig.paramKey === "pitchdecay") {
+      v = Math.round(trig.value * 1000) + "ms";
+    }
+    return "Ch " + (trig.channel | 0) + " · " + label + " = " + v +
+      "  (adjacent step → set instrument param)";
+  }
+  const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
+  const fxName = mod ? (FxTypes[mod.type]?.name || mod.type) : "?";
+  if (trig.kind === "on") return fxName + " · ON trigger (adjacent step lights → engage insert)";
+  if (trig.kind === "off") return fxName + " · OFF trigger (adjacent step lights → bypass insert)";
+  const pDef = autoParamDef(score, trig);
+  const label = pDef?.label || trig.paramKey;
+  let v = formatAutoShort(trig.paramKey, trig.value);
+  if (trig.paramKey === "time") v = Math.round(trig.value * 1000) + "ms";
+  return fxName + " · " + label + " = " + v + "  (adjacent step → set)";
+}
+
+export function playheadCells(runners) {
+  const out = [];
+  if (!runners) return out;
+  for (const r of runners) {
+    if (r.playingLane == null || r.playingStep < 0) continue;
+    const lane = r.playingLane;
+    const step = r.playingStep | 0;
+    if (step < 0 || step >= lane.steps.length) continue;
+    lane.ensurePath?.();
+    const pt = lane.cellPoint ? lane.cellPoint(step, 0) : { x: lane.x + step, y: lane.y };
+    out.push({ lane, step, x: pt.x, y: pt.y, channel: lane.channel?.channel ?? 1 });
+  }
+  return out;
+}
+
+export function activePlayheadColumns(runners) {
+  const cols = new Set();
+  for (const c of playheadCells(runners)) cols.add(c.x);
+  return cols;
+}
+
+/** True if trigger cell is orthogonally next to any lit playhead step. */
+export function triggerAdjacentToPlayhead(trig, cells) {
+  for (const c of cells) {
+    if (isAdjacent(trig.x, trig.y, c.x, c.y)) return true;
+  }
+  return false;
+}
+
+/** True if trigger is next to any lane step cell (for placement validity / opacity). */
+export function triggerAdjacentToAnyLane(score, trig) {
+  for (const lane of score.lanes || []) {
+    lane.ensurePath?.();
+    for (const p of lane.path || []) {
+      if (isAdjacent(trig.x, trig.y, p.x, p.y)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Apply adjacency triggers for this frame.
+ * ON/OFF latch module.on; param/chan set values (sample-and-hold latch).
+ * @param {Map} latch  key=`fxId\\0param` or `ch\\0N\\0param` → value
+ * @param {Map} fired  key=triggerId → last fire key (debounce while still adjacent)
+ * @param {Array|null} patches  project.patches for channel instrument triggers
+ */
+export function applyFxTriggers(score, runners, playing, latch = null, fired = null, patches = null) {
+  ensureFxLists(score);
+  const cells = playing ? playheadCells(runners) : [];
+  const activeTrigIds = new Set();
+  const adjTrigIds = new Set();
+
+  if (!playing) {
+    if (latch) latch.clear();
+    if (fired) fired.clear();
+    return { cells, activeTrigIds, adjTrigIds };
+  }
+
+  for (const trig of score.fxTriggers) {
+    const nearLane = triggerAdjacentToAnyLane(score, trig);
+    if (nearLane) adjTrigIds.add(trig.id);
+
+    const hot = triggerAdjacentToPlayhead(trig, cells);
+    if (!hot) {
+      if (fired) fired.delete(trig.id);
+      continue;
+    }
+    activeTrigIds.add(trig.id);
+
+    // Debounce: fire once per continuous adjacency stretch
+    const fireKey = cells.map((c) => c.x + "," + c.y).sort().join("|");
+    if (fired && fired.get(trig.id) === fireKey) continue;
+    if (fired) fired.set(trig.id, fireKey);
+
+    if (trig.kind === "chan") {
+      if (!patches || !trig.paramKey) continue;
+      const t = ParamTargets.parse(trig.paramKey);
+      if (t < 0) continue;
+      ParamTargets.set(PatchBank.get(patches, trig.channel | 0), t, trig.value);
+      if (latch) latch.set("ch\0" + (trig.channel | 0) + "\0" + trig.paramKey, trig.value);
+      continue;
+    }
+
+    const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
+    if (!mod) continue;
+
+    if (trig.kind === "on") {
+      mod.on = true;
+    } else if (trig.kind === "off") {
+      mod.on = false;
+    } else if (trig.kind === "param" && trig.paramKey) {
+      mod.params[trig.paramKey] = trig.value;
+      if (latch) latch.set(mod.id + "\0" + trig.paramKey, trig.value);
+    }
+  }
+
+  // Re-apply latched params every frame (so they stick)
+  if (latch) {
+    for (const [key, value] of latch) {
+      if (key.startsWith("ch\0")) {
+        if (!patches) continue;
+        const parts = key.split("\0");
+        const ch = +parts[1];
+        const paramKey = parts[2];
+        const t = ParamTargets.parse(paramKey);
+        if (t < 0) continue;
+        ParamTargets.set(PatchBank.get(patches, ch), t, value);
+        continue;
+      }
+      const sep = key.indexOf("\0");
+      if (sep < 0) continue;
+      const mod = score.fxModules.find((m) => m.id === key.slice(0, sep));
+      if (mod) mod.params[key.slice(sep + 1)] = value;
+    }
+  }
+
+  return { cells, activeTrigIds, adjTrigIds };
+}
+
+/**
+ * Live UI/audio snapshot.
+ * @param {Array|null} patches  project.patches for channel instrument triggers
+ */
+export function computeFxLiveState(score, runners, playing, latch = null, fired = null, patches = null) {
+  ensureFxLists(score);
+  // Mutates module.on / params / patches via triggers
+  const { cells, activeTrigIds, adjTrigIds } = applyFxTriggers(
+    score, runners, playing, latch, fired, patches,
+  );
+
+  const liveParams = new Map();
+  const receivingFx = new Set(); // ON inserts
+  const activePatternIds = new Set();
+  const autoOnParam = new Set();
+  const chanOnParam = new Set(); // "chN:paramKey" for UI ticks/highlight
+
+  for (const mod of score.fxModules) {
+    liveParams.set(mod.id, { ...(mod.params || {}) });
+    if (mod.on && !isPatternModule(mod)) receivingFx.add(mod.id);
+  }
+
+  if (playing && latch) {
+    for (const [key, value] of latch) {
+      if (key.startsWith("ch\0")) {
+        const parts = key.split("\0");
+        chanOnParam.add(parts[1] + ":" + parts[2]);
+        continue;
+      }
+      const sep = key.indexOf("\0");
+      if (sep < 0) continue;
+      const p = liveParams.get(key.slice(0, sep));
+      if (p) {
+        p[key.slice(sep + 1)] = value;
+        autoOnParam.add(key);
+      }
+    }
+  }
+
+  // Currently firing param triggers highlight
+  for (const trig of score.fxTriggers) {
+    if (!activeTrigIds.has(trig.id)) continue;
+    if (trig.kind === "param") {
+      autoOnParam.add(trig.targetFxId + "\0" + trig.paramKey);
+    } else if (trig.kind === "chan") {
+      chanOnParam.add((trig.channel | 0) + ":" + trig.paramKey);
+    }
+  }
+
+  const cols = new Set(cells.map((c) => c.x));
+  for (const mod of score.fxModules) {
+    if (!patternOpOf(mod)) continue;
+    for (let dx = 0; dx < mod.w; dx++) {
+      if (cols.has(mod.x + dx)) {
+        activePatternIds.add(mod.id);
+        break;
+      }
+    }
+  }
+
+  return {
+    cells,
+    cols,
+    activeTrigIds,
+    adjTrigIds,
+    activeAutoIds: activeTrigIds, // alias for old UI
+    activePathIds: new Set(),
+    receivingFx,
+    activePatternIds,
+    liveParams,
+    autoOnParam,
+    chanOnParam,
+  };
+}
+
+export function collectPatternTriggers(score, runners, lastFired) {
+  ensureFxLists(score);
+  const triggers = [];
+  if (!runners?.length) return triggers;
+  const cols = activePlayheadColumns(runners);
+
+  for (const mod of score.fxModules) {
+    const op = patternOpOf(mod);
+    if (!op) continue;
+    let hit = false;
+    for (let dx = 0; dx < mod.w; dx++) {
+      if (cols.has(mod.x + dx)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+    const key = mod.id + "@" + [...cols].sort((a, b) => a - b).join(",");
+    if (lastFired && lastFired.get(mod.id) === key) continue;
+    if (lastFired) lastFired.set(mod.id, key);
+    triggers.push({
+      op,
+      n: Math.round(mod.params?.n ?? 0),
+      id: mod.id,
+      key,
+    });
+  }
+  return triggers;
+}
+
+/**
+ * Audio graph message: serial inserts for ON modules.
+ * Each module gets params + on flag; worklet ramps mix to 0 when off.
+ */
+export function buildFxGraphMessage(project, runners, playing, latch = null, fired = null) {
+  const score = project.score;
+  const live = computeFxLiveState(
+    score, runners, playing, latch, fired, project.patches,
+  );
+
+  const modules = (score.fxModules || [])
+    .filter((m) => !isPatternModule(m))
+    .map((m) => ({
+      id: m.id,
+      type: m.type,
+      on: !!m.on,
+      params: live.liveParams.get(m.id) || { ...(m.params || {}) },
+    }));
+
+  return {
+    modules,
+    // Inserts process master dry in series; no path sends
+    pathOpens: [],
+    chains: [],
+    insertMode: true,
+    tempo: project.tempo,
+    live,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy stubs (editor / format may still import)
+// ---------------------------------------------------------------------------
+
+export function createPathRoute() {
+  return { id: newFxId("pr"), laneIndex: 0, fromStep: 0, toStep: 0, targetFxId: "", amount: 0 };
+}
+
+export function createFxRoute({ fromFxId, toFxId, amount = 1, id = null }) {
+  return { id: id || newFxId("fr"), fromFxId, toFxId, amount };
+}
+
+export function createAutoNode({ x, y, targetFxId, paramKey, value, id = null }) {
+  return createFxTrigger({
+    x, y, kind: "param", targetFxId, paramKey, value, id,
+  });
 }
