@@ -1,26 +1,22 @@
-// In-place placement menu: one pointer gesture places a tile.
-// ← → change category · ↓ select item · release commits.
+// In-place gesture menu: one pointer stroke picks an action.
+// ← → category · ↓ arm item · release commits · Dismiss = release without arming.
 
 import { Pitch } from "./core.js";
 
-const CAT_PX = 56; // horizontal pixels per category step
-const ITEM_PX = 28; // vertical pixels per item
-const DEAD_Y = 18; // must drag down this far before an item arms
-const ARM_Y = 10; // small jitter before we treat motion as intentional
+const CAT_PX = 52;
+const ITEM_PX = 28;
+const DEAD_Y = 22; // must drag below the Dismiss band before items arm
+const ARM_Y = 8;
 
 /**
- * Build categories. Note pitches centre on the last-edited note.
- * @param {number} centreNote MIDI note for the Note column
+ * Categories for free cells on a lane (place tiles / grow / etc.).
  */
-export function buildPlaceCategories(centreNote = 60) {
+export function buildLaneCategories(centreNote = 60) {
   const centre = Math.min(Pitch.Highest - 6, Math.max(Pitch.Lowest + 6, centreNote | 0));
   const notes = [];
   for (let d = -6; d <= 6; d++) {
     const n = centre + d;
-    notes.push({
-      label: Pitch.toName(n),
-      place: { kind: "NOTE", note: n },
-    });
+    notes.push({ label: Pitch.toName(n), place: { kind: "NOTE", note: n } });
   }
 
   return [
@@ -28,7 +24,6 @@ export function buildPlaceCategories(centreNote = 60) {
       id: "note",
       label: "NOTE",
       items: notes,
-      defaultItem: 6, // centre pitch
     },
     {
       id: "gate",
@@ -45,7 +40,6 @@ export function buildPlaceCategories(centreNote = 60) {
         { label: "50%", place: { kind: "GPRB", percent: 50 } },
         { label: "75%", place: { kind: "GPRB", percent: 75 } },
       ],
-      defaultItem: 2,
     },
     {
       id: "lock",
@@ -54,15 +48,11 @@ export function buildPlaceCategories(centreNote = 60) {
         { label: "PABS", place: { kind: "PABS" } },
         { label: "PREL", place: { kind: "PREL" } },
       ],
-      defaultItem: 0,
     },
     {
       id: "flow",
       label: "FLOW",
-      items: [
-        { label: "JUMP", place: { kind: "JUMP" } },
-      ],
-      defaultItem: 0,
+      items: [{ label: "JUMP", place: { kind: "JUMP" } }],
     },
     {
       id: "fx",
@@ -74,45 +64,87 @@ export function buildPlaceCategories(centreNote = 60) {
         { label: "FILTER", place: { kind: "FX", fxType: "filter" } },
         { label: "PAN", place: { kind: "FX", fxType: "pan" } },
       ],
-      defaultItem: 0,
     },
     {
       id: "meta",
       label: "META",
-      items: [
-        { label: "PAT +", place: { kind: "FX", fxType: "pat+" } },
-        { label: "PAT −", place: { kind: "FX", fxType: "pat-" } },
-        { label: "PAT →0", place: { kind: "FX", fxType: "patgo", n: 0 } },
-        { label: "PAT →1", place: { kind: "FX", fxType: "patgo", n: 1 } },
-        { label: "PAT →2", place: { kind: "FX", fxType: "patgo", n: 2 } },
-        { label: "PAT →3", place: { kind: "FX", fxType: "patgo", n: 3 } },
-        { label: "PAT →4", place: { kind: "FX", fxType: "patgo", n: 4 } },
-        { label: "PAT →5", place: { kind: "FX", fxType: "patgo", n: 5 } },
-      ],
-      defaultItem: 0,
+      items: metaItems(),
     },
   ];
 }
 
 /**
- * Floating gesture menu attached to the score body.
- * Host wires pointer events from the canvas into begin/update/end.
+ * Categories for empty ground (no lane under the cell).
+ */
+export function buildGroundCategories() {
+  return [
+    {
+      id: "lane",
+      label: "LANE",
+      items: [
+        { label: "New lane", place: { kind: "NEW_LANE" } },
+        { label: "New lane ×8", place: { kind: "NEW_LANE", steps: 8 } },
+        { label: "New lane ×16", place: { kind: "NEW_LANE", steps: 16 } },
+        { label: "New lane ×32", place: { kind: "NEW_LANE", steps: 32 } },
+      ],
+    },
+    {
+      id: "fx",
+      label: "FX",
+      items: [
+        { label: "DELAY", place: { kind: "FX", fxType: "delay" } },
+        { label: "REVERB", place: { kind: "FX", fxType: "reverb" } },
+        { label: "DISTORT", place: { kind: "FX", fxType: "distort" } },
+        { label: "FILTER", place: { kind: "FX", fxType: "filter" } },
+        { label: "PAN", place: { kind: "FX", fxType: "pan" } },
+      ],
+    },
+    {
+      id: "meta",
+      label: "META",
+      items: metaItems(),
+    },
+  ];
+}
+
+function metaItems() {
+  return [
+    { label: "PAT +", place: { kind: "FX", fxType: "pat+" } },
+    { label: "PAT −", place: { kind: "FX", fxType: "pat-" } },
+    { label: "PAT →1", place: { kind: "FX", fxType: "patgo", n: 0 } },
+    { label: "PAT →2", place: { kind: "FX", fxType: "patgo", n: 1 } },
+    { label: "PAT →3", place: { kind: "FX", fxType: "patgo", n: 2 } },
+    { label: "PAT →4", place: { kind: "FX", fxType: "patgo", n: 3 } },
+    { label: "PAT →5", place: { kind: "FX", fxType: "patgo", n: 4 } },
+    { label: "PAT →6", place: { kind: "FX", fxType: "patgo", n: 5 } },
+  ];
+}
+
+/** @deprecated use buildLaneCategories */
+export function buildPlaceCategories(centreNote = 60) {
+  return buildLaneCategories(centreNote);
+}
+
+/**
+ * Floating gesture menu. Host wires canvas pointer events into begin/update/end.
  */
 export class PlaceMenu {
   constructor(host) {
-    this.host = host; // element to append to (body)
+    this.host = host;
     this.root = document.createElement("div");
     this.root.className = "place-menu hidden";
     this.root.setAttribute("aria-hidden", "true");
     host.appendChild(this.root);
 
     this.active = false;
-    this.point = null; // grid cell
+    this.mode = "lane"; // 'lane' | 'ground'
+    this.point = null;
     this.origin = { x: 0, y: 0 };
-    this.categories = buildPlaceCategories(60);
+    this.categories = buildLaneCategories(60);
     this.catIndex = 0;
-    this.itemIndex = -1; // -1 = category only, not yet armed
+    this.itemIndex = -1; // -1 = Dismiss band (no commit)
     this._moved = false;
+    this.pointerId = null;
   }
 
   get currentCategory() {
@@ -124,16 +156,25 @@ export class PlaceMenu {
     return this.currentCategory?.items[this.itemIndex] ?? null;
   }
 
+  get isDismiss() {
+    return this.itemIndex < 0;
+  }
+
   /**
+   * @param {'lane'|'ground'} mode
    * @param {{x:number,y:number}} gridPoint
-   * @param {{clientX:number,clientY:number}} pointer
+   * @param {{clientX:number,clientY:number,pointerId?:number}} pointer
    * @param {number} centreNote
    */
-  begin(gridPoint, pointer, centreNote = 60) {
+  begin(mode, gridPoint, pointer, centreNote = 60) {
     this.active = true;
+    this.mode = mode === "ground" ? "ground" : "lane";
     this.point = { x: gridPoint.x, y: gridPoint.y };
     this.origin = { x: pointer.clientX, y: pointer.clientY };
-    this.categories = buildPlaceCategories(centreNote);
+    this.pointerId = pointer.pointerId ?? null;
+    this.categories = this.mode === "ground"
+      ? buildGroundCategories()
+      : buildLaneCategories(centreNote);
     this.catIndex = 0;
     this.itemIndex = -1;
     this._moved = false;
@@ -149,16 +190,11 @@ export class PlaceMenu {
     const dy = pointer.clientY - this.origin.y;
     if (Math.hypot(dx, dy) > ARM_Y) this._moved = true;
 
-    // Horizontal: category. Snap around origin so small L/R changes category.
     let cat = Math.round(dx / CAT_PX);
     cat = Math.min(this.categories.length - 1, Math.max(0, cat));
-    // Also allow wrapping by continuous drag past edges
-    if (dx < -CAT_PX * 0.4 && cat === 0 && this.catIndex > 0) {
-      // keep floor
-    }
     this.catIndex = cat;
 
-    // Vertical down: item. Up cancels arming.
+    // Above / in the Dismiss band → no action. Down into the list → arm an item.
     if (dy < DEAD_Y) {
       this.itemIndex = -1;
     } else {
@@ -172,16 +208,13 @@ export class PlaceMenu {
   }
 
   /**
-   * @returns {{ point, place } | null} commit payload or null if cancelled
-   *
-   * Only commits when the pointer has dragged far enough down to arm an item.
-   * Tap / zero drag / sideways-only = leave the cell empty (cursor only).
+   * @returns {{ point, place } | null}
    */
   end() {
     if (!this.active) return null;
     const point = this.point;
     const item = this.itemIndex >= 0 ? this.currentItem : null;
-    const result = item ? { point, place: item.place } : null;
+    const result = item ? { point, place: item.place, mode: this.mode } : null;
     this.cancel();
     return result;
   }
@@ -189,16 +222,16 @@ export class PlaceMenu {
   cancel() {
     this.active = false;
     this.point = null;
+    this.pointerId = null;
     this.root.classList.add("hidden");
     this.root.setAttribute("aria-hidden", "true");
     this.root.innerHTML = "";
   }
 
   _position(clientX, clientY) {
-    // Keep menu near the finger but not under it (offset down-right of press).
     const pad = 12;
-    const w = 200;
-    const h = 220;
+    const w = 210;
+    const h = 260;
     let left = clientX + 14;
     let top = clientY + 14;
     if (left + w > window.innerWidth - pad) left = clientX - w - 14;
@@ -213,8 +246,16 @@ export class PlaceMenu {
 
     const hint = document.createElement("div");
     hint.className = "place-menu-hint";
-    hint.textContent = "← → category · ↓ choose · release";
+    hint.textContent = this.mode === "ground"
+      ? "empty ground · ← → category · ↓ choose"
+      : "← → category · ↓ choose · release";
     this.root.appendChild(hint);
+
+    // Explicit dismiss band — release here does nothing (natural "return")
+    const dismiss = document.createElement("div");
+    dismiss.className = "place-menu-dismiss" + (this.isDismiss ? " active" : "");
+    dismiss.textContent = "Dismiss";
+    this.root.appendChild(dismiss);
 
     const cats = document.createElement("div");
     cats.className = "place-menu-cats";
@@ -231,19 +272,14 @@ export class PlaceMenu {
     let activeRow = null;
     cat.items.forEach((item, i) => {
       const row = document.createElement("div");
-      row.className = "place-menu-item" +
-        (i === this.itemIndex ? " active" : "") +
-        (this.itemIndex < 0 && i === (cat.defaultItem ?? 0) ? " default" : "");
+      row.className = "place-menu-item" + (i === this.itemIndex ? " active" : "");
       row.textContent = item.label;
       if (i === this.itemIndex) activeRow = row;
       list.appendChild(row);
     });
     this.root.appendChild(list);
     if (activeRow) {
-      // Keep the armed item in view as you drag down a long list.
-      queueMicrotask(() => {
-        activeRow.scrollIntoView({ block: "nearest" });
-      });
+      queueMicrotask(() => activeRow.scrollIntoView({ block: "nearest" }));
     }
 
     const foot = document.createElement("div");
@@ -251,7 +287,7 @@ export class PlaceMenu {
     if (this.itemIndex >= 0) {
       foot.textContent = "release → " + cat.items[this.itemIndex].label;
     } else {
-      foot.textContent = "drag down to place · release empty";
+      foot.textContent = "release → dismiss";
     }
     this.root.appendChild(foot);
   }

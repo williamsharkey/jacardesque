@@ -333,6 +333,8 @@ export class ScoreView {
     this.onKey = null;
     /** (point) => boolean — host decides if cell can take a new tile */
     this.canPlaceAt = null;
+    /** (point) => 'lane'|'ground'|null */
+    this.menuModeAt = null;
     /** () => number — centre pitch for place menu notes */
     this.placeCentreNote = null;
     /** ({ point, place }) => void — commit from place menu */
@@ -358,9 +360,13 @@ export class ScoreView {
     this._dragCount = 1;
     this._placing = false;
     this.placeMenu = null;
-    this._autoDrag = null; // { fxId, paramKey, value, origin }
-    this._pathDrag = null; // { laneIndex, fromStep, origin }
-    this._fxChainDrag = null; // { fromFxId }
+    this._autoDrag = null;
+    this._pathDrag = null;
+    this._fxChainDrag = null;
+    this._panning = false;
+    this._panArmed = false; // true only after drag exceeds threshold
+    this._captureEl = null;
+    this._captureId = null;
 
     this._bind();
   }
@@ -372,17 +378,39 @@ export class ScoreView {
     c.addEventListener("pointerdown", (e) => this._pointerDown(e));
     c.addEventListener("pointermove", (e) => this._pointerMove(e));
     c.addEventListener("pointerup", (e) => this._pointerUp(e));
+    c.addEventListener("pointercancel", (e) => this._pointerUp(e));
+    c.addEventListener("lostpointercapture", () => {
+      // Safety: never leave pan "stuck" if capture is lost.
+      this._panning = false;
+      this._panArmed = false;
+    });
     c.addEventListener("keydown", (e) => {
       if (this.onKey?.(e)) {
         e.preventDefault();
         e.stopPropagation();
       }
     });
+  }
 
-    // Wheel / trackpad pan via scroll container
-    this.scroll.addEventListener("pointerdown", (e) => {
-      // Allow empty-ground drags on canvas to pan via scroll: handled when grab not set
-    });
+  _capture(el, pointerId) {
+    this._releaseCapture();
+    try {
+      el.setPointerCapture(pointerId);
+      this._captureEl = el;
+      this._captureId = pointerId;
+    } catch (_) { /* ignore */ }
+  }
+
+  _releaseCapture() {
+    if (this._captureEl != null && this._captureId != null) {
+      try {
+        if (this._captureEl.hasPointerCapture?.(this._captureId)) {
+          this._captureEl.releasePointerCapture(this._captureId);
+        }
+      } catch (_) { /* ignore */ }
+    }
+    this._captureEl = null;
+    this._captureId = null;
   }
 
   localPoint(e) {
@@ -465,7 +493,7 @@ export class ScoreView {
     if (autoHit) {
       e.preventDefault();
       this._autoDrag = { ...autoHit, clientX: e.clientX, clientY: e.clientY };
-      this.canvas.setPointerCapture(e.pointerId);
+      this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
@@ -476,56 +504,59 @@ export class ScoreView {
       e.preventDefault();
       this.selectedFxId = fx.id;
       this.onFxSelect?.(fx.id);
-      // Start chain drag from FX body (shift or second gesture: plain drag = chain)
       this._fxChainDrag = { fromFxId: fx.id, origin: pos, moved: false };
-      this.canvas.setPointerCapture(e.pointerId);
+      this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
 
-    // Path send nub: on rail step of a lane, start path-route drag
+    // Path send: Alt/⌘-drag from a rail step
     const cell = this.score.at(point);
     if (cell.kind === CellKind.Rail || cell.kind === CellKind.Tile) {
       const laneIndex = this.score.lanes.indexOf(cell.lane);
-      if (laneIndex >= 0 && cell.step >= 0) {
-        // Alt/option or meta: start path route from this step
-        if (e.altKey || e.metaKey) {
-          e.preventDefault();
-          this._pathDrag = {
-            laneIndex,
-            fromStep: cell.step,
-            origin: pos,
-          };
-          this.canvas.setPointerCapture(e.pointerId);
-          this.paint();
-          return;
-        }
+      if (laneIndex >= 0 && cell.step >= 0 && (e.altKey || e.metaKey)) {
+        e.preventDefault();
+        this._pathDrag = { laneIndex, fromStep: cell.step, origin: pos };
+        this._capture(this.canvas, e.pointerId);
+        this.paint();
+        return;
       }
     }
 
-    // Double-click still quick-places a note on a free cell.
-    if (e.detail >= 2 && this.canPlaceAt?.(point) && this.score.placementLane(point)) {
+    // Double-click still quick-places a note on a free lane cell.
+    if (e.detail >= 2 && this.score.placementLane(point)) {
       this.onDoubleClick?.();
       return;
     }
 
-    // Placeable free cell (rail / empty / TERM grow / bare for FX): gesture menu.
-    if (this.canPlaceAt?.(point)) {
+    // Lane place menu OR empty-ground menu (new lane / FX / META).
+    const menuMode = this.menuModeAt?.(point)
+      ?? (this.canPlaceAt?.(point)
+        ? (this.score.placementLane(point) ? "lane" : "ground")
+        : null);
+    if (menuMode) {
       e.preventDefault();
       this._placing = true;
-      this._placeOrigin = { x: e.clientX, y: e.clientY };
       const centre = this.placeCentreNote?.() ?? 60;
-      this.placeMenu?.begin(point, e, centre);
-      this.canvas.setPointerCapture(e.pointerId);
+      this.placeMenu?.begin(menuMode, point, e, centre);
+      this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
 
+    // Space+drag or middle button could pan later; left-drag on inert cells pans
+    // only after a movement threshold (see _pointerMove).
     if (cell.kind !== CellKind.Tile && cell.kind !== CellKind.Head) {
-      // True bare ground — pan the plane.
+      e.preventDefault();
       this._panning = true;
-      this._panOrigin = { x: e.clientX, y: e.clientY, sl: this.scroll.scrollLeft, st: this.scroll.scrollTop };
-      this.scroll.setPointerCapture?.(e.pointerId);
+      this._panArmed = false;
+      this._panOrigin = {
+        x: e.clientX,
+        y: e.clientY,
+        sl: this.scroll.scrollLeft,
+        st: this.scroll.scrollTop,
+      };
+      this._capture(this.canvas, e.pointerId);
       return;
     }
 
@@ -533,7 +564,7 @@ export class ScoreView {
     this._grabbed = cell;
     this._grabOrigin = pos;
     this._dragging = false;
-    this.canvas.setPointerCapture(e.pointerId);
+    this._capture(this.canvas, e.pointerId);
   }
 
   _pointerMove(e) {
@@ -566,6 +597,11 @@ export class ScoreView {
     if (this._panning) {
       const dx = e.clientX - this._panOrigin.x;
       const dy = e.clientY - this._panOrigin.y;
+      // Require a real drag before scrolling — a click must not stick pan mode.
+      if (!this._panArmed) {
+        if (Math.hypot(dx, dy) < 6) return;
+        this._panArmed = true;
+      }
       this.scroll.scrollLeft = this._panOrigin.sl - dx;
       this.scroll.scrollTop = this._panOrigin.st - dy;
       return;
@@ -592,6 +628,9 @@ export class ScoreView {
   }
 
   _pointerUp(e) {
+    // Always release capture first so pan can never stick after mouse-up.
+    this._releaseCapture();
+
     if (this._autoDrag) {
       const point = Style.cellAt(this.localPoint(e));
       const d = this._autoDrag;
@@ -602,7 +641,6 @@ export class ScoreView {
         value: d.value,
         point,
       });
-      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
       this.paint();
       return;
     }
@@ -620,7 +658,6 @@ export class ScoreView {
           targetFxId: fx.id,
         });
       }
-      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
       this.paint();
       return;
     }
@@ -632,19 +669,16 @@ export class ScoreView {
       if (d.moved && target && target.id !== d.fromFxId) {
         this.onFxChained?.({ fromFxId: d.fromFxId, toFxId: target.id });
       }
-      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
       this.paint();
       return;
     }
     if (this._placing) {
       this._endPlace(true);
-      try {
-        this.canvas.releasePointerCapture(e.pointerId);
-      } catch (_) { /* ignore */ }
       return;
     }
     if (this._panning) {
       this._panning = false;
+      this._panArmed = false;
       return;
     }
     if (!this._grabbed) return;
@@ -652,9 +686,6 @@ export class ScoreView {
     const point = this._dropPoint;
     const dropped = this._dragging;
     this._endDrag();
-    try {
-      this.canvas.releasePointerCapture(e.pointerId);
-    } catch (_) { /* ignore */ }
     if (!dropped) return;
     if (grabbed.kind === CellKind.Head) this.onLaneDropped?.(grabbed.lane, point);
     else this.onTilesDropped?.(grabbed, point);
@@ -1576,6 +1607,7 @@ export class JacquardUI {
     this.view.sequencer = app.sequencer;
     this.view.placeMenu = new PlaceMenu(this.body);
     this.view.canPlaceAt = (point) => this.editor.canPlaceAt(point);
+    this.view.menuModeAt = (point) => this.editor.menuModeAt(point);
     this.view.placeCentreNote = () => this.editor.lastNotePitch;
     this.view.onPlaceCommit = ({ point, place }) => {
       this.editor.put(place, point);
@@ -1739,7 +1771,7 @@ export class JacquardUI {
     if (this.editor.canPlace) {
       body.append(el("div", "divider"));
       body.append(el("div", "caption",
-        "Press cell: ← → category, ↓ pick item, release to place. Short release stays empty."));
+        "Press: ← → category, ↓ choose, release. Stay on Dismiss (top) to cancel."));
       const grid = el("div", "palette");
       for (const kind of KINDS) {
         grid.append(button(kind, () => {

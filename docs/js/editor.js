@@ -69,22 +69,32 @@ export class ScoreEditor {
   }
 
   canPlaceAt(point) {
+    return this.canPlaceTileAt(point) || this.canOpenGroundMenu(point);
+  }
+
+  canPlaceTileAt(point) {
     if (!point) return false;
     ensureFxLists(this.score);
     if (findFxAt(this.score, point)) return false;
     const cell = this.score.at(point);
     if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
-    // Free ground may receive an FX pedal (not only lanes).
-    if (this.score.placementLane(point) != null) return true;
-    // Bare ground free of lanes + fx for pedal placement
+    return this.score.placementLane(point) != null;
+  }
+
+  /** Empty world cell — ground menu (new lane, FX, META), not pan. */
+  canOpenGroundMenu(point) {
+    if (!point) return false;
+    ensureFxLists(this.score);
+    if (findFxAt(this.score, point)) return false;
+    const cell = this.score.at(point);
+    if (cell.kind !== CellKind.Empty) return false;
     return this.score.isFree(point);
   }
 
-  canPlaceTileAt(point) {
-    if (!point) return false;
-    const cell = this.score.at(point);
-    if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
-    return this.score.placementLane(point) != null;
+  menuModeAt(point) {
+    if (this.canPlaceTileAt(point)) return "lane";
+    if (this.canOpenGroundMenu(point)) return "ground";
+    return null;
   }
 
   /**
@@ -98,6 +108,20 @@ export class ScoreEditor {
 
     if (atPoint) this.setCursor(atPoint);
     const point = this.getCursor();
+
+    if (spec.kind === "NEW_LANE") {
+      const steps = spec.steps ?? 16;
+      const free = this.score.findFreeRow(point, steps);
+      const lane = this.score.addLane(
+        free.x,
+        free.y,
+        new ChannelTile(this.channel, 16, ""),
+        steps,
+      );
+      this.setCursor(gp(lane.headX, lane.y));
+      this.commit();
+      return true;
+    }
 
     // FX pedals land on free ground (not on lane cells).
     if (spec.kind === "FX") {
@@ -254,9 +278,9 @@ export class ScoreEditor {
     this.onChanged?.(); // refresh tile panel caption / pitch bar
   }
 
-  newChannelLane() {
-    const point = this.score.findFreeRow(this.getCursor(), 16);
-    this.score.addLane(point.x, point.y, new ChannelTile(this.channel), 16);
+  newChannelLane(steps = 16) {
+    const point = this.score.findFreeRow(this.getCursor(), steps);
+    this.score.addLane(point.x, point.y, new ChannelTile(this.channel, 16, ""), steps);
     this.commit();
   }
 

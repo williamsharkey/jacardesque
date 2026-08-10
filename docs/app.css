@@ -408,6 +408,27 @@ button.lock-label:hover {
   letter-spacing: 0.02em;
 }
 
+.place-menu-dismiss {
+  margin: 0 6px 6px;
+  padding: 7px 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--label);
+  background: #25252e;
+  border: 1px solid var(--panel-line);
+  border-radius: 5px;
+}
+
+.place-menu-dismiss.active {
+  color: var(--note-text);
+  background: #3a3a48;
+  border-color: var(--marker);
+  outline: 1px solid var(--marker);
+}
+
 .place-menu-cats {
   display: flex;
   gap: 3px;
