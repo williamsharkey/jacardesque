@@ -79,7 +79,7 @@ class App {
     this.project = project;
     this.sequencer.project = project;
     this.editor.project = project;
-    this.audio.setFx(this.project.fx, this.project.tempo);
+    if (this.audio.ready) this.audio.setFx(this.project.fx, this.project.tempo);
     return message;
   }
 
@@ -105,6 +105,8 @@ class App {
 }
 
 const app = new App();
+// Exposed for automated tests and debugging.
+window.__jacquard = app;
 app.boot().catch((err) => {
   console.error(err);
   document.getElementById("app").textContent = "Failed to start: " + err.message;

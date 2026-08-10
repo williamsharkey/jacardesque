@@ -1,0 +1,15 @@
+{
+  "name": "jacquardesque",
+  "private": true,
+  "type": "module",
+  "description": "Web Audio port of keijiro/Jacquard — tests and local tooling",
+  "scripts": {
+    "test": "node docs/js/test-core.mjs",
+    "test:browser": "node docs/js/browser-smoke.mjs",
+    "test:all": "node docs/js/test-core.mjs && node docs/js/browser-smoke.mjs",
+    "serve": "python3 -m http.server 8080 --directory docs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

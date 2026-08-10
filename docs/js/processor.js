@@ -444,7 +444,35 @@ class JacquardProcessor extends AudioWorkletProcessor {
       delaySpread: 0,
     };
     this._reportCounter = 0;
+    this._bufSize = 0;
+    this._dryL = null;
+    this._dryR = null;
+    this._reverbIn = null;
+    this._delayIn = null;
+    this._wetL = null;
+    this._wetR = null;
     this.port.onmessage = (e) => this.onMessage(e.data);
+    // First status immediately so the main thread can anchor its clock.
+    this.port.postMessage({
+      type: "status",
+      dspSample: 0,
+      activeVoices: 0,
+      queuedNotes: 0,
+      droppedNotes: 0,
+      stolenNotes: 0,
+      cancelledNotes: 0,
+    });
+  }
+
+  ensureBuffers(frameCount) {
+    if (this._bufSize >= frameCount) return;
+    this._bufSize = frameCount;
+    this._dryL = new Float32Array(frameCount);
+    this._dryR = new Float32Array(frameCount);
+    this._reverbIn = new Float32Array(frameCount);
+    this._delayIn = new Float32Array(frameCount);
+    this._wetL = new Float32Array(frameCount);
+    this._wetR = new Float32Array(frameCount);
   }
 
   onMessage(msg) {
@@ -467,12 +495,19 @@ class JacquardProcessor extends AudioWorkletProcessor {
     const outR = output[1] || output[0];
     const frameCount = outL.length;
 
-    const dryL = new Float32Array(frameCount);
-    const dryR = new Float32Array(frameCount);
-    const reverbIn = new Float32Array(frameCount);
-    const delayIn = new Float32Array(frameCount);
-    const wetL = new Float32Array(frameCount);
-    const wetR = new Float32Array(frameCount);
+    this.ensureBuffers(frameCount);
+    const dryL = this._dryL;
+    const dryR = this._dryR;
+    const reverbIn = this._reverbIn;
+    const delayIn = this._delayIn;
+    const wetL = this._wetL;
+    const wetR = this._wetR;
+    dryL.fill(0, 0, frameCount);
+    dryR.fill(0, 0, frameCount);
+    reverbIn.fill(0, 0, frameCount);
+    delayIn.fill(0, 0, frameCount);
+    wetL.fill(0, 0, frameCount);
+    wetR.fill(0, 0, frameCount);
 
     const bufferStart = this.dspSample;
     this.pool.render(dryL, dryR, reverbIn, delayIn, frameCount, bufferStart, this.sampleRate);
@@ -492,7 +527,8 @@ class JacquardProcessor extends AudioWorkletProcessor {
 
     this.dspSample += frameCount;
     this._reportCounter += frameCount;
-    if (this._reportCounter >= (this.sampleRate / 20) | 0) {
+    // ~60 Hz status so transport/playheads stay tight.
+    if (this._reportCounter >= (this.sampleRate / 60) | 0) {
       this._reportCounter = 0;
       this.port.postMessage({
         type: "status",

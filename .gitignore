@@ -21,3 +21,4 @@ Desktop.ini
 /*.apk
 /*.tgz
 /*_DoNotShip
+node_modules/

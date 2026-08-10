@@ -103,10 +103,17 @@ Web architecture
 Local preview: serve `docs/` over HTTP (modules + worklets need a server), e.g.
 
 ```bash
-cd docs && python3 -m http.server 8080
+npm run serve
+# open http://localhost:8080/
 ```
 
-then open `http://localhost:8080/`.
+Tests:
+
+```bash
+npm install          # once — puppeteer-core for browser smoke
+npm test             # core model / format / sequencer / offline FM
+npm run test:browser # headless Chrome: UI + AudioWorklet + Play
+```
 
 Documentation
 -------------

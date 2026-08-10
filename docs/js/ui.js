@@ -110,18 +110,33 @@ function el(tag, className, text) {
   return node;
 }
 
+// Matches Unity ValueBar: relative drag (right = up = more), shift for fine,
+// double-click types an exact value (not clamped to the bar range).
+const DRAG_DISTANCE = 100; // px of travel for full bar span
+const FINE_DRAG_SCALE = 0.12;
+const DOUBLE_CLICK_MS = 350;
+
 export function createValueBar(range, get, set, settled) {
   const root = el("div", "value-bar");
   const fill = el("div", "value-bar-fill");
   const read = el("div", "value-bar-readout");
-  root.append(fill, read);
+  const input = el("input", "value-bar-input");
+  input.type = "text";
+  input.spellcheck = false;
+  input.classList.add("hidden");
+  root.append(fill, read, input);
 
   let dragging = false;
-  let last = get();
+  let scrubbed = false;
+  let dragOrigin = { x: 0, y: 0 };
+  let dragPosition = 0;
+  let dragFine = false;
+  let lastClick = 0;
+  let editing = false;
 
   function paint() {
+    if (editing) return;
     const value = get();
-    last = value;
     const pos = toPosition(range, value);
     if (range.bipolar) {
       const mid = 0.5;
@@ -139,37 +154,82 @@ export function createValueBar(range, get, set, settled) {
     read.textContent = formatRange(range, value);
   }
 
-  function setFromClientX(clientX) {
-    const rect = root.getBoundingClientRect();
-    const pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    let value = toValue(range, pos);
-    if (range.snap > 0) value = Math.round(value / range.snap) * range.snap;
-    set(value);
+  function round(value) {
+    return range.snap > 0 ? Math.round(value / range.snap) * range.snap : value;
+  }
+
+  function applyDrag(e) {
+    const fine = !!e.shiftKey;
+    if (fine !== dragFine) {
+      dragFine = fine;
+      dragOrigin = { x: e.clientX, y: e.clientY };
+      dragPosition = toPosition(range, get());
+    }
+    const dx = e.clientX - dragOrigin.x;
+    const dy = e.clientY - dragOrigin.y;
+    let travel = (dx - dy) / DRAG_DISTANCE;
+    if (dragFine) travel *= FINE_DRAG_SCALE;
+    if (dx * dx + dy * dy > 16) scrubbed = true;
+    const pos = Math.min(1, Math.max(0, dragPosition + travel));
+    set(round(toValue(range, pos)));
+    paint();
+  }
+
+  function beginEdit() {
+    editing = true;
+    dragging = false;
+    root.classList.remove("active");
+    read.classList.add("hidden");
+    fill.classList.add("hidden");
+    input.classList.remove("hidden");
+    const value = get();
+    input.value = range.scale && range.scale !== 1
+      ? String(+(value * range.scale).toFixed(range.digits + 2))
+      : String(value);
+    input.focus();
+    input.select();
+  }
+
+  function endEdit(commit) {
+    if (!editing) return;
+    editing = false;
+    input.classList.add("hidden");
+    read.classList.remove("hidden");
+    fill.classList.remove("hidden");
+    if (commit) {
+      let typed = parseFloat(input.value);
+      if (!Number.isNaN(typed)) {
+        if (range.scale && range.scale !== 1) typed /= range.scale;
+        // Typing is deliberately not clamped to the useful bar range.
+        set(typed);
+        settled?.();
+      }
+    }
     paint();
   }
 
   root.addEventListener("pointerdown", (e) => {
-    if (e.detail >= 2) {
-      e.preventDefault();
-      const typed = prompt("Value", String(get() * (range.scale || 1)));
-      if (typed == null) return;
-      let value = parseFloat(typed);
-      if (Number.isNaN(value)) return;
-      if (range.scale && range.scale !== 1) value /= range.scale;
-      set(value);
-      paint();
-      settled?.();
+    if (e.button !== 0 || editing) return;
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastClick < DOUBLE_CLICK_MS) {
+      lastClick = 0;
+      beginEdit();
       return;
     }
+    lastClick = now;
     dragging = true;
+    scrubbed = false;
+    dragFine = !!e.shiftKey;
+    dragOrigin = { x: e.clientX, y: e.clientY };
+    dragPosition = toPosition(range, get());
     root.classList.add("active");
     root.setPointerCapture(e.pointerId);
-    setFromClientX(e.clientX);
   });
 
   root.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    setFromClientX(e.clientX);
+    applyDrag(e);
   });
 
   root.addEventListener("pointerup", (e) => {
@@ -179,8 +239,22 @@ export function createValueBar(range, get, set, settled) {
     try {
       root.releasePointerCapture(e.pointerId);
     } catch (_) { /* ignore */ }
-    settled?.();
+    // Settled only after a scrub (or immediately if the number never moved as a drag).
+    if (scrubbed) settled?.();
   });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      endEdit(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      endEdit(false);
+    }
+    e.stopPropagation();
+  });
+  input.addEventListener("focusout", () => endEdit(true));
+  input.addEventListener("pointerdown", (e) => e.stopPropagation());
 
   root.sync = paint;
   paint();
@@ -969,20 +1043,22 @@ function drawEntry(ctx, r) {
 
 const KINDS = ["NOTE", "PABS", "PREL", "GCYC", "GPRB", "JUMP"];
 
+// Drag ranges match Unity InspectorPanel; typing may still go outside.
 const PitchRange = makeRange({
-  low: Pitch.Lowest,
-  high: Pitch.Highest,
+  low: 24,
+  high: 108,
   snap: 1,
   digits: 0,
   display: (v) => Math.round(v) + " " + Pitch.toName(Math.round(v)),
 });
-const LengthRange = makeRange({ low: 0.25, high: 64, curve: 2, digits: 2 });
+const LengthRange = makeRange({
+  low: 0.25, high: 8, snap: 0.25, digits: 2, unit: "steps",
+});
 const PeriodRange = makeRange({ low: 2, high: 8, snap: 1, digits: 0 });
-const IndexRange = (period) => makeRange({ low: 1, high: period, snap: 1, digits: 0 });
-const PercentRange = makeRange({ low: 0, high: 100, digits: 0, unit: "%" });
+const FiresOnRange = makeRange({ low: 1, high: 8, snap: 1, digits: 0 });
+const PercentRange = makeRange({ low: 0, high: 100, snap: 1, digits: 0, unit: "%" });
 const ChannelRange = makeRange({ low: 1, high: PatchBank.Channels, snap: 1, digits: 0 });
 const TempoRange = makeRange({ low: 40, high: 240, digits: 1 });
-const StepsRange = makeRange({ low: 1, high: 64, snap: 1, digits: 0 });
 
 export class JacquardUI {
   constructor(root, app) {
@@ -1078,15 +1154,32 @@ export class JacquardUI {
     this.transport.append(button("Save", () => {
       this.message = this.app.save();
       this._slots = this.app.store.slots();
+      this._rebuildFileChooser();
+      this.canvas.focus();
     }, 46));
     this.transport.append(button("Load", () => {
       this.message = this.app.load();
       this.onChanged();
+      this.canvas.focus();
     }, 46));
 
     this.status = el("div", "status");
     this.transport.append(this.status);
     this._sendShown = false;
+  }
+
+  _rebuildFileChooser() {
+    // Replace the chooser in place so new slots appear after Save.
+    const old = this.fileChooser;
+    this.fileChooser = chooser(
+      "File",
+      this._slots,
+      () => Math.max(0, this._slots.indexOf(this.app.store.name)),
+      (i) => {
+        this.app.store.name = this._slots[i];
+      },
+    );
+    old.replaceWith(this.fileChooser);
   }
 
   onChanged() {
@@ -1150,7 +1243,7 @@ export class JacquardUI {
       body.append(barRow("Length", LengthRange,
         () => tile.length,
         (v) => {
-          tile.length = Math.min(64, Math.max(0.25, v));
+          tile.length = Math.min(64, Math.max(0.05, v));
           this.editor.rememberNote(tile);
           this.editor.touch();
         }));
@@ -1160,9 +1253,8 @@ export class JacquardUI {
         (v) => {
           tile.period = Math.round(v);
           this.editor.touch();
-        },
-        () => this.buildTilePanel()));
-      body.append(barRow("Index", IndexRange(tile.period),
+        }));
+      body.append(barRow("Fires on", FiresOnRange,
         () => tile.index,
         (v) => {
           tile.index = Math.round(v);
@@ -1183,7 +1275,9 @@ export class JacquardUI {
           this.editor.touch();
         },
         () => this.refreshPanels(true)));
-      body.append(chooser("Division", ChannelTile.Divisions.map(String),
+      body.append(chooser(
+        "Step",
+        ChannelTile.Divisions.map((d) => "1/" + d),
         () => {
           const i = ChannelTile.Divisions.indexOf(tile.division);
           return i < 0 ? 7 : i;
@@ -1191,22 +1285,34 @@ export class JacquardUI {
         (i) => {
           tile.division = ChannelTile.Divisions[i];
           this.editor.touch();
-        }));
+        },
+      ));
     }
 
     if (this.editor.cell.kind === CellKind.Head && lane) {
       body.append(el("div", "divider"));
-      body.append(barRow("Steps", StepsRange,
-        () => lane.steps.length,
-        (v) => {
-          const target = Math.max(1, Math.round(v));
-          while (lane.steps.length < target) {
-            if (!this.editor.score.hasRoomToGrow(lane)) break;
-            lane.addStep();
-          }
-          while (lane.steps.length > target) lane.steps.pop();
-          this.editor.commit();
-        }));
+      body.append(el("div", "caption", "Lane"));
+      const steps = el("div", "control-row");
+      steps.append(el("div", "control-label", "Steps"));
+      const value = el("div", "chooser-value");
+      const paintSteps = () => {
+        value.textContent = String(lane.steps.length);
+      };
+      steps.append(
+        button("−", () => {
+          this.editor.resizeLane(-1);
+          paintSteps();
+          this.canvas.focus();
+        }, 28),
+        value,
+        button("+", () => {
+          this.editor.resizeLane(1);
+          paintSteps();
+          this.canvas.focus();
+        }, 28),
+      );
+      paintSteps();
+      body.append(steps);
     }
 
     body.append(el("div", "divider"));

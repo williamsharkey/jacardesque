@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>selftest running</title>
+<link rel="icon" href="data:,">
+</head>
+<body>
+<pre id="log">starting…</pre>
+<script type="module">
+const logEl = document.getElementById("log");
+const log = (msg) => {
+  logEl.textContent += "\n" + msg;
+  console.log(msg);
+};
+const fails = [];
+const assert = (c, m) => { if (!c) fails.push(m); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withTimeout = (p, ms, label) => Promise.race([
+  p,
+  sleep(ms).then(() => { throw new Error("timeout: " + label); }),
+]);
+
+try {
+  const {
+    Project, ProjectFormat, Sequencer, noteEventFromPatch, PatchBank,
+  } = await import("./js/core.js");
+  const { AudioEngine } = await import("./js/audio.js");
+  log("modules loaded");
+
+  const p = Project.createSample();
+  assert(ProjectFormat.write(ProjectFormat.read(ProjectFormat.write(p))) === ProjectFormat.write(p), "roundtrip");
+
+  const seq = new Sequencer();
+  seq.project = p;
+  seq._random = () => 0;
+  const notes = [];
+  seq.play(0, 0);
+  seq.schedule(0, 48000 * 2, 48000, notes);
+  assert(notes.length > 5, "scheduled notes: " + notes.length);
+  log("sequencer notes: " + notes.length);
+
+  const audio = new AudioEngine({ maxVoices: 16, lookahead: 0.1 });
+  await withTimeout(audio.resume(), 5000, "audio.resume");
+  assert(audio.ready, "audio ready");
+  log("audio ready @ " + audio.sampleRate);
+
+  await sleep(250);
+  const sample = audio.pollSample();
+  log("pollSample " + sample);
+  audio.setFx(p.fx, p.tempo);
+
+  const patch = PatchBank.get(p.patches, 1);
+  audio.schedule(noteEventFromPatch(patch, 60, 0.25, sample + Math.floor(audio.sampleRate * 0.05)));
+
+  for (let i = 0; i < 40; i++) {
+    const out = [];
+    seq.schedule(audio.pollSample(), audio.lookaheadSamples, audio.sampleRate, out);
+    if (out.length) audio.scheduleMany(out);
+    await sleep(16);
+  }
+  await sleep(300);
+  log("status " + JSON.stringify(audio.status));
+  assert(typeof audio.status.activeVoices === "number", "status present");
+
+  // UI boot (main.js creates its own app on #app)
+  const root = document.createElement("div");
+  root.id = "app";
+  document.body.appendChild(root);
+  await import("./js/main.js");
+  await sleep(400);
+  assert(!!document.querySelector(".score-canvas"), "ui canvas");
+  assert(!!document.querySelector(".transport"), "ui transport");
+  const play = [...document.querySelectorAll("button")].find((b) => /Play|Stop/.test(b.textContent));
+  assert(!!play, "play button");
+  play.click();
+  await sleep(900);
+  assert(play.textContent === "Stop", "playing got " + play.textContent);
+  log("ui play ok");
+
+  if (fails.length) {
+    document.title = "FAIL:" + fails.join("|");
+    log("FAIL\n" + fails.join("\n"));
+  } else {
+    document.title = "PASS";
+    log("ALL PASS");
+  }
+} catch (e) {
+  document.title = "FAIL:" + (e && e.message);
+  log(String(e && e.stack || e));
+}
+</script>
+</body>
+</html>

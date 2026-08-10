@@ -264,6 +264,28 @@ button.lock-label:hover {
   pointer-events: none;
 }
 
+.value-bar-input {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  background: #2a2a32;
+  color: var(--note-text);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  outline: 1px solid var(--note-text);
+}
+
+.value-bar-input.hidden,
+.value-bar-readout.hidden,
+.value-bar-fill.hidden {
+  display: none;
+}
+
 .chooser .chooser-value {
   flex: 1;
   text-align: center;

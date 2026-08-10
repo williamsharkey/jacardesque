@@ -118,7 +118,8 @@ export class ScoreEditor {
     tile.note = Math.min(Pitch.Highest, Math.max(Pitch.Lowest, tile.note + semitones));
     this.rememberNote(tile);
     this.preview(tile.note);
-    this.commit();
+    this.touch();
+    this.onChanged?.(); // refresh tile panel caption / pitch bar
   }
 
   newChannelLane() {

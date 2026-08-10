@@ -21,6 +21,8 @@ export class AudioEngine {
     this._lastFx = null;
     this._lastDspSample = 0;
     this._lastReportTime = null;
+    this._contextAnchorTime = null;
+    this._contextAnchorSample = 0;
   }
 
   get lookaheadSamples() {
@@ -49,6 +51,10 @@ export class AudioEngine {
         this._lastDspSample = msg.dspSample;
         this._lastReportTime = performance.now();
         this.currentSample = msg.dspSample;
+        if (this.context) {
+          this._contextAnchorTime = this.context.currentTime;
+          this._contextAnchorSample = msg.dspSample;
+        }
         this.status = {
           activeVoices: msg.activeVoices,
           queuedNotes: msg.queuedNotes,
@@ -66,14 +72,28 @@ export class AudioEngine {
   async resume() {
     if (!this.ready) await this.init();
     if (this.context.state !== "running") await this.context.resume();
+    // Seed the clock if the worklet has not reported yet so Play is not stuck at 0.
+    if (this._lastReportTime == null) {
+      this._lastDspSample = 0;
+      this._lastReportTime = performance.now();
+    }
   }
 
   // Extrapolate between worklet status reports so the sequencer keeps advancing.
+  // Prefer AudioContext time once we have a sample anchor from the worklet.
   pollSample() {
     if (!this.ready) return 0;
-    if (this._lastReportTime == null) return this._lastDspSample;
-    const elapsed = (performance.now() - this._lastReportTime) / 1000;
-    return this._lastDspSample + Math.floor(elapsed * this.sampleRate);
+    if (this._lastReportTime == null) return 0;
+    // Blend wall-clock extrapolation with AudioContext for steadier transport.
+    const wall = (performance.now() - this._lastReportTime) / 1000;
+    let sample = this._lastDspSample + Math.floor(wall * this.sampleRate);
+    if (this.context && this._contextAnchorTime != null) {
+      const ctxElapsed = this.context.currentTime - this._contextAnchorTime;
+      const fromCtx = this._contextAnchorSample + Math.floor(ctxElapsed * this.sampleRate);
+      // Prefer context clock when it is ahead of a stale report (typical case).
+      if (fromCtx > sample) sample = fromCtx;
+    }
+    return sample;
   }
 
   schedule(note) {
