@@ -240,16 +240,18 @@ class Voice {
       case 11: sample = this.renderDx7(note, time, env); break;
       case 12: sample = this.renderGranular(note, time, env); break;
       case 13: sample = this.renderSampler(note, time, env); break;
+      case 14: sample = this.renderDrumKit(note, time, env); break;
       default: sample = this.renderFm(note, time, env); break;
     }
 
     // Soft one-pole tone control — tames digital grit without dulling the note.
     // DX7/sampler already tone-shape; skip heavy filter on them.
-    const cutoff = inst === 3 ? 0.55
+    const cutoff = inst === 3 || (inst === 14 && this._drumVoice === "hatc") ? 0.55
       : inst === 5 || inst === 10 ? 0.12
       : inst === 8 ? 0.22
       : inst === 11 || inst === 13 ? 0.65
       : inst === 12 ? 0.18
+      : inst === 14 ? 0.32
       : 0.28;
     this.filter += (sample - this.filter) * cutoff;
     return this.filter * note.level;
@@ -463,6 +465,129 @@ class Voice {
     if (!this.samp || typeof JqSampler === "undefined") return 0;
     return JqSampler.render(this.samp, env);
   }
+
+  /**
+   * Drum machine (engine 14): one instrument = full kit.
+   * MIDI selects pad voice; note.frequency tunes body (toms, kick pitch, etc.).
+   * Kit character from shared patch params (sweep, decay, grit).
+   */
+  renderDrumKit(note, time, env) {
+    const voice = drumPadVoice(note.midi | 0);
+    this._drumVoice = voice;
+    // Scale kit globals lightly into per-hit envelope
+    const kitDecay = Math.max(0.02, note.modulatorDecay || 0.05);
+    const grit = Math.min(1.5, (note.feedback || 0) * 0.4);
+    switch (voice) {
+      case "kick":
+        return this.renderKick(note, time, env);
+      case "snare":
+        return this.renderSnare(note, time, env) * (1 + grit * 0.15);
+      case "rim":
+        return this.renderRim(note, time, env);
+      case "clap":
+        return this.renderClap(note, time, env);
+      case "tom":
+        return this.renderTom(note, time, env);
+      case "hatc":
+        return this.renderHatKit(note, time, env, 1.6 + kitDecay * 8);
+      case "hato":
+        return this.renderHatKit(note, time, env, 0.45 + kitDecay * 2);
+      case "perc":
+        return this.renderPerc(note, time, env);
+      default:
+        return this.renderKick(note, time, env);
+    }
+  }
+
+  /** Short stick-on-rim click. */
+  renderRim(note, time, env) {
+    const scale = pitchScale(note, time);
+    const body = FastMath.sin(FastMath.TwoPi * this.carrierPhase) * env * 0.25;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + this.increment * scale * 2.8);
+    const click = time < 0.003 ? this.rand() * (1 - time / 0.003) : 0;
+    const decay = Math.exp(-time * 55);
+    return (body + click * 0.55) * decay;
+  }
+
+  /** Multi-burst clap (3 noise pulses). */
+  renderClap(note, time, env) {
+    const bursts = [0, 0.012, 0.024];
+    let n = 0;
+    for (const t0 of bursts) {
+      const u = time - t0;
+      if (u >= 0 && u < 0.02) n += this.rand() * (1 - u / 0.02);
+    }
+    const body = Math.exp(-time * 18) * env;
+    return n * body * 0.55;
+  }
+
+  /**
+   * Tunable tom — body pitch follows note.frequency so pad + semitone tune works.
+   */
+  renderTom(note, time, env) {
+    const scale = pitchScale(note, time);
+    const body = FastMath.sin(FastMath.TwoPi * this.carrierPhase) * env;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + this.increment * scale);
+    // Soft attack click
+    const click = time < 0.004 ? this.rand() * (1 - time / 0.004) * 0.2 : 0;
+    const decay = Math.exp(-time * (8 + (note.modulatorDecay || 0.05) * 20));
+    return (body * 0.95 + click) * decay * 1.05;
+  }
+
+  /** Closed/open hat via decay rate (kit-coloured). */
+  renderHatKit(note, time, env, decayMul) {
+    const n = this.rand();
+    const hp = n - this.noise;
+    this.noise = n;
+    const decay = Math.exp(-time * (22 * decayMul + (note.modulationIndex || 1) * 4));
+    return hp * env * decay * 0.5;
+  }
+
+  /** Woodblock / perc blip — pitch-tracked. */
+  renderPerc(note, time, env) {
+    const scale = pitchScale(note, time);
+    const mod = FastMath.sin(FastMath.TwoPi * this.modulatorPhase) * 1.8 * Math.exp(-time * 40);
+    const out = FastMath.sin(FastMath.TwoPi * this.carrierPhase + mod) * env;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + this.increment * scale * 1.5);
+    this.modulatorPhase = FastMath.frac(this.modulatorPhase + this.increment * scale * 4.2);
+    return out * Math.exp(-time * 22) * 0.75;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drum kit pad → voice (mirrors docs/js/drums.js; kept local for worklet)
+// ---------------------------------------------------------------------------
+// Spaced centres (match docs/js/drums.js) so retune stays on the same pad.
+const DRUM_PAD_CENTRES = [
+  { midi: 36, voice: "kick" },
+  { midi: 38, voice: "snare" },
+  { midi: 41, voice: "rim" },
+  { midi: 44, voice: "clap" },
+  { midi: 48, voice: "tom" },
+  { midi: 58, voice: "tom" },
+  { midi: 68, voice: "tom" },
+  { midi: 74, voice: "hatc" },
+  { midi: 80, voice: "hato" },
+  { midi: 86, voice: "perc" },
+];
+
+function drumPadVoice(midi) {
+  const m = midi | 0;
+  // Legacy F#5/G#5 hats in factory sketches
+  if (m >= 77 && m <= 90) return (m & 1) === 0 ? "hatc" : "hato";
+  // Legacy factory snare on D3 only
+  if (m === 50) return "snare";
+  if (m < 34) return "kick";
+  let best = DRUM_PAD_CENTRES[0];
+  let bestD = 999;
+  for (const p of DRUM_PAD_CENTRES) {
+    const d = Math.abs(p.midi - m);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best.voice;
 }
 
 class VoicePool {

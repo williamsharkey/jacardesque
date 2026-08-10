@@ -1,18 +1,19 @@
-// Named instrument catalog — presets over synthesis engines.
-// patch.instrument = engine id 0–13 (what the worklet renders).
-// UI selection uses catalog keys (kick-deep, pad-warm, …).
+// Named instrument catalog — synth engines + drum machines (kits).
+// patch.instrument = engine id 0–14 (what the worklet renders).
+// Drums are role:"drum" kits (engine 14), not separate kick/snare/hat engines.
 
 import catalog from "./instrument-catalog.json" with { type: "json" };
+import { DRUM_ENGINE, isDrumRole } from "./drums.js";
 
 /** Highest engine id the worklet knows (inclusive). */
-export const MAX_ENGINE = 13;
+export const MAX_ENGINE = 14;
 
 /** Engine algorithms (processor switch). */
 export const Instruments = {
   fm: 0,
-  kick: 1,
-  snare: 2,
-  hat: 3,
+  kick: 1,     // legacy single-voice (old sketches)
+  snare: 2,    // legacy
+  hat: 3,      // legacy
   bass: 4,
   pad: 5,
   bell: 6,
@@ -23,38 +24,67 @@ export const Instruments = {
   dx7: 11,     // 6-op DX7-style FM (32 algorithms)
   granular: 12, // grain cloud over shared pad buffer
   sampler: 13, // multi-sample procedural banks
+  drum: DRUM_ENGINE, // full kit — pad selected by note MIDI
 };
 
 export const EngineNames = [
   "FM", "Kick", "Snare", "Hat", "Bass", "Pad", "Bell", "Pluck",
-  "String", "Wave", "Organ", "DX7", "Granular", "Sampler",
+  "String", "Wave", "Organ", "DX7", "Granular", "Sampler", "DrumKit",
 ];
 
 function clampEngine(n) {
   return Math.min(MAX_ENGINE, Math.max(0, n | 0));
 }
 
-/** Full catalog of named presets (agent-designed + level-tuned). */
+/** Full catalog of named presets (synths + drum kits). */
 export const InstrumentCatalog = catalog.map((p, i) => ({
   ...p,
   index: i,
   engine: clampEngine(p.engine),
+  role: p.role || (p.engine === DRUM_ENGINE ? "drum" : "synth"),
 }));
 
 export const InstrumentKeys = InstrumentCatalog.map((p) => p.key);
 export const InstrumentNames = InstrumentCatalog.map((p) => p.name);
 
+/** Synth-only entries (exclude drum machines). */
+export function synthCatalog() {
+  return InstrumentCatalog.filter((p) => !isDrumRole(p));
+}
+
+/** Drum kit entries only. */
+export function drumCatalog() {
+  return InstrumentCatalog.filter((p) => isDrumRole(p));
+}
+
 /** Legacy short keys → catalog key (for old sketches / dock). */
 const LEGACY_ALIAS = {
   fm: "fm-lead",
-  kick: "kick-punch",
-  snare: "snare-crisp",
-  hat: "hat-closed",
+  // Old single drum "instruments" → punch kit (pad chosen by note)
+  kick: "kit-punch",
+  snare: "kit-punch",
+  hat: "kit-punch",
+  "kick-deep": "kit-soft",
+  "kick-punch": "kit-punch",
+  "kick-soft": "kit-soft",
+  "kick-hard": "kit-hard",
+  "snare-crisp": "kit-punch",
+  "snare-fat": "kit-hard",
+  "snare-rim": "kit-punch",
+  "snare-room": "kit-room",
+  "hat-closed": "kit-punch",
+  "hat-open": "kit-room",
+  "hat-tight": "kit-hard",
+  "hat-soft": "kit-soft",
   bass: "bass-sub",
   pad: "pad-warm",
   bell: "bell-chime",
   pluck: "pluck-nylon",
+  drum: "kit-punch",
+  drums: "kit-punch",
 };
+
+export { isDrumRole, DRUM_ENGINE } from "./drums.js";
 
 export function parseInstrument(key) {
   if (key == null || key === "") return 0;
@@ -125,4 +155,13 @@ export function catalogByCategory() {
     (map[p.category] ||= []).push(p);
   }
   return map;
+}
+
+/** Group INST menu: drum kits first, then synths by category. */
+export function catalogMenuGroups() {
+  const drums = drumCatalog();
+  const synths = synthCatalog();
+  const byCat = {};
+  for (const p of synths) (byCat[p.category] ||= []).push(p);
+  return { drums, synthsByCategory: byCat, synths };
 }

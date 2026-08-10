@@ -3,7 +3,7 @@
 // Empty ground: canvas shell — L/U/R create lane, ↓ create object (see ScoreView).
 
 import { Pitch } from "./core.js";
-import { InstrumentCatalog } from "./instruments.js";
+import { InstrumentCatalog, catalogMenuGroups } from "./instruments.js";
 
 const CAT_PX = 52;
 const ITEM_PX = 28;
@@ -63,12 +63,24 @@ export function buildLaneCategories(centreNote = 60) {
  * Instruments are many:1 with lanes (nearest term → left corner).
  */
 export function buildGroundObjectCategories() {
+  const { drums, synths } = catalogMenuGroups();
+  // Drum kits first (machines), then melodic/synth engines
+  const instItems = [
+    ...drums.map((p) => ({
+      label: ("● " + p.name).toUpperCase().slice(0, 12),
+      place: { kind: "INST", instType: p.key },
+    })),
+    ...synths.map((p) => ({
+      label: p.name.toUpperCase().slice(0, 12),
+      place: { kind: "INST", instType: p.key },
+    })),
+  ];
   return [
     {
       id: "inst",
       label: "INST",
-      // Full 30-preset catalog (labels truncated for grid shell)
-      items: InstrumentCatalog.map((p) => ({
+      // Kits (●) then synths — full catalog for grid shell
+      items: instItems.length ? instItems : InstrumentCatalog.map((p) => ({
         label: p.name.toUpperCase().slice(0, 12),
         place: { kind: "INST", instType: p.key },
       })),

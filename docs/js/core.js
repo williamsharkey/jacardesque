@@ -1803,7 +1803,7 @@ function writePatch(p) {
   const inst = p.instrument | 0;
   const names = [
     "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
-    "string", "wave", "organ", "dx7", "granular", "sampler",
+    "string", "wave", "organ", "dx7", "granular", "sampler", "drum",
   ];
   return "instrument=" + (names[inst] || "fm") +
     " level=" + F(p.level) +
@@ -2136,7 +2136,7 @@ function readPatch(patch, tokens, from) {
     if (key === "instrument") {
       const names = [
         "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
-        "string", "wave", "organ", "dx7", "granular", "sampler",
+        "string", "wave", "organ", "dx7", "granular", "sampler", "drum",
       ];
       const idx = names.indexOf(String(text).toLowerCase());
       patch.instrument = idx >= 0 ? idx : (readInt(text) || 0);

@@ -21,6 +21,14 @@ import {
 } from "./core.js";
 import { Style } from "./style.js";
 import { InstrumentNames, InstrumentKeys } from "./instruments.js";
+import {
+  DRUM_PADS,
+  padFromMidi,
+  drumNoteLabel,
+  midiForPadTune,
+  drumTuneOffset,
+  defaultDrumMidi,
+} from "./drums.js";
 import { PlaceMenu, buildGroundObjectCategories } from "./place-menu.js";
 import {
   ensureFxLists,
@@ -53,6 +61,7 @@ import {
   syncInstrumentPatch,
   laneInstrument,
   laneColor,
+  isDrumInstrumentType,
 } from "./inst-model.js";
 
 // ---------------------------------------------------------------------------
@@ -2836,13 +2845,14 @@ export class ScoreView {
     for (const lane of this.score.lanes) {
       lane.ensurePath();
       const col = laneColor(this.score, lane, Style.NoteLine);
+      const drumLane = isDrumInstrumentType(laneInstrument(this.score, lane)?.type);
       if (lane.channel) this._drawLaneMute(ctx, lane, col);
       const muteAlpha = lane.muted ? 0.4 : 1;
       if (lane.circular) {
         this._drawCircularJoin(ctx, lane.headPoint, col);
       } else {
         this._drawStartMark(ctx, lane.headPoint, lane.head, col);
-        this._drawTile(ctx, Terminator, lane.termPoint, muteAlpha, col);
+        this._drawTile(ctx, Terminator, lane.termPoint, muteAlpha, col, false);
       }
       for (let i = 0; i < lane.steps.length; i++) {
         const active = lane.isStepActive(i);
@@ -2856,6 +2866,7 @@ export class ScoreView {
             lane.cellPoint(i, d),
             lifted ? 0.2 : alpha,
             col,
+            drumLane,
           );
         }
         // Empty inactive rails: faint cell outline so the strip stays visible
@@ -2966,7 +2977,7 @@ export class ScoreView {
     return depth >= this._grabbed.depth && depth < this._grabbed.depth + count;
   }
 
-  _drawTile(ctx, tile, point, alpha, laneCol = null) {
+  _drawTile(ctx, tile, point, alpha, laneCol = null, drumLane = false) {
     const r = Style.cellRect(point);
     const col = laneCol || Style.NoteLine;
     ctx.save();
@@ -2990,7 +3001,7 @@ export class ScoreView {
       roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
       ctx.stroke();
     }
-    drawTileContent(ctx, tile, r, col);
+    drawTileContent(ctx, tile, r, col, drumLane);
     ctx.restore();
   }
 
@@ -3230,9 +3241,9 @@ function toward(from, to, distance) {
 // Tile icons / labels
 // ---------------------------------------------------------------------------
 
-function drawTileContent(ctx, tile, r, laneCol = null) {
+function drawTileContent(ctx, tile, r, laneCol = null, drumLane = false) {
   if (tile instanceof NoteTile) {
-    drawNote(ctx, tile, r, laneCol);
+    drawNote(ctx, tile, r, laneCol, drumLane);
     return;
   }
   if (tile instanceof ChannelTile) {
@@ -3270,11 +3281,7 @@ function drawTileContent(ctx, tile, r, laneCol = null) {
   }
 }
 
-function drawNote(ctx, tile, r, laneCol = null) {
-  const name = Pitch.toClassName(tile.note);
-  const letter = name[0];
-  const sharp = name.length > 1;
-  const octave = String(Pitch.toOctave(tile.note));
+function drawNote(ctx, tile, r, laneCol = null, drumLane = false) {
   const ink = laneCol || Style.NoteText;
   ctx.fillStyle = ink;
   ctx.textAlign = "center";
@@ -3282,15 +3289,32 @@ function drawNote(ctx, tile, r, laneCol = null) {
   const cx = r.x + r.w / 2;
   // Leave room under the name for the duration bar
   const cy = r.y + r.h / 2 - 3;
-  ctx.font = "600 15px system-ui,sans-serif";
-  if (sharp) {
-    ctx.fillText(letter, cx - 5, cy);
-    ctx.font = "600 9px system-ui,sans-serif";
-    ctx.fillText("♯", cx + 1, cy - 4);
-    ctx.font = "600 15px system-ui,sans-serif";
-    ctx.fillText(octave, cx + 8, cy);
+
+  // Drum kit lanes show pad short labels (KD, SN, T2…) not piano names
+  if (drumLane) {
+    const pad = padFromMidi(tile.note);
+    const st = drumTuneOffset(tile.note);
+    ctx.font = "700 11px system-ui,sans-serif";
+    ctx.fillText(pad.short, cx, cy - (st ? 3 : 0));
+    if (st) {
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.fillText((st > 0 ? "+" : "") + st, cx, cy + 7);
+    }
   } else {
-    ctx.fillText(letter + octave, cx, cy);
+    const name = Pitch.toClassName(tile.note);
+    const letter = name[0];
+    const sharp = name.length > 1;
+    const octave = String(Pitch.toOctave(tile.note));
+    ctx.font = "600 15px system-ui,sans-serif";
+    if (sharp) {
+      ctx.fillText(letter, cx - 5, cy);
+      ctx.font = "600 9px system-ui,sans-serif";
+      ctx.fillText("♯", cx + 1, cy - 4);
+      ctx.font = "600 15px system-ui,sans-serif";
+      ctx.fillText(octave, cx + 8, cy);
+    } else {
+      ctx.fillText(letter + octave, cx, cy);
+    }
   }
   // Duration: thin bar under the name — width = gate length (1 step = full bar)
   const padX = 4;
@@ -3500,8 +3524,89 @@ const LengthRange = makeRange({
   low: 0.25, high: 8, snap: 0.25, digits: 2, unit: "steps",
 });
 
-/** 3-octave piano + octave −/+ + pitch slider for note tiles. */
+/** True when the focused / dock voice is a drum machine (pads, not piano). */
+function editorIsDrum(editor) {
+  const key = editor?.focusInstrument?.type || editor?.dockVoiceKey;
+  return isDrumInstrumentType(key);
+}
+
+/** Drum-machine pad picker + tune (±st) for note tiles on a kit. */
+function createDrumPadEditor(tile, editor, onPaint) {
+  const root = el("div", "pitch-editor drum-pad-editor");
+  const head = el("div", "pitch-head");
+  const read = el("div", "pitch-readout");
+  head.append(read);
+  root.append(head);
+
+  const grid = el("div", "drum-pad-grid editor");
+  root.append(grid);
+
+  const TuneRange = makeRange({
+    low: -12, high: 12, snap: 1, digits: 0,
+    display: (v) => (v > 0 ? "+" : "") + Math.round(v) + " st",
+  });
+
+  const setFromPad = (padId, preview = true) => {
+    const st = drumTuneOffset(tile.note);
+    tile.note = midiForPadTune(padId, st);
+    editor.rememberNote(tile);
+    editor.touch();
+    paint();
+    onPaint?.();
+    if (preview) editor.preview(tile.note);
+  };
+
+  const setTune = (st, preview = true) => {
+    const pad = padFromMidi(tile.note);
+    tile.note = midiForPadTune(pad.id, st);
+    editor.rememberNote(tile);
+    editor.touch();
+    paint();
+    onPaint?.();
+    if (preview) editor.preview(tile.note);
+  };
+
+  const bar = createValueBar(
+    TuneRange,
+    () => drumTuneOffset(tile.note),
+    (v) => setTune(v, false),
+    () => editor.preview(tile.note),
+  );
+  const barWrap = el("div", "control-row");
+  barWrap.append(el("div", "control-label", "Tune"));
+  barWrap.append(bar);
+  root.append(barWrap);
+  root.append(el("div", "caption",
+    "Pads pick the drum sound; Tune shifts pitch (±12 st) — useful for toms."));
+
+  function paint() {
+    const pad = padFromMidi(tile.note);
+    read.textContent = drumNoteLabel(tile.note);
+    grid.innerHTML = "";
+    for (const p of DRUM_PADS) {
+      const btn = el("button", "drum-pad" + (p.id === pad.id ? " active" : ""));
+      btn.type = "button";
+      btn.textContent = p.short;
+      btn.title = p.label + " (base MIDI " + p.midi + ") — tune with slider for toms etc.";
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setFromPad(p.id);
+      });
+      grid.append(btn);
+    }
+    bar.sync?.();
+  }
+
+  paint();
+  root.sync = () => paint();
+  return root;
+}
+
+/** 3-octave piano + octave −/+ + pitch slider for melodic note tiles. */
 function createPitchEditor(tile, editor, onPaint) {
+  if (editorIsDrum(editor)) return createDrumPadEditor(tile, editor, onPaint);
+
   const root = el("div", "pitch-editor");
 
   const setNote = (n, preview = true) => {
@@ -3856,7 +3961,7 @@ export class JacquardUI {
     bar.append(lim);
   }
 
-  /** Fixed bottom keyboard: instrument voice + piano; drag keys / icons onto grid. */
+  /** Fixed bottom dock: instrument cycler + piano (synths) or pads (drum kits). */
   _buildDockKeyboard() {
     this.dock = el("div", "dock-keyboard");
     this.body.append(this.dock);
@@ -3887,8 +3992,40 @@ export class JacquardUI {
     this.dock.append(laneRow);
     this._rebuildDockInstIcons();
 
+    // Performance surface: keys OR drum pads (swapped when voice role changes)
+    this.dockPerf = el("div", "dock-perf");
+    this.dock.append(this.dockPerf);
+    this._rebuildDockPerf();
+
+    this._refreshDockLaneLabel();
+  }
+
+  /** Piano for synths, pad grid for drum machines. */
+  _rebuildDockPerf() {
+    if (!this.dockPerf) return;
+    this.dockPerf.innerHTML = "";
+    const drum = editorIsDrum(this.editor);
+    this.dock.classList.toggle("is-drum", drum);
+
+    if (drum) {
+      const wrap = el("div", "dock-pads");
+      const label = el("div", "dock-pads-label", "Drum pads — drag onto grid · tune on the note");
+      wrap.append(label);
+      const grid = el("div", "drum-pad-grid dock");
+      for (const p of DRUM_PADS) {
+        const btn = el("button", "drum-pad");
+        btn.type = "button";
+        btn.textContent = p.short;
+        btn.title = p.label + " — click to audition · drag to place";
+        this._bindDockKey(btn, p.midi, p.label);
+        grid.append(btn);
+      }
+      wrap.append(grid);
+      this.dockPerf.append(wrap);
+      return;
+    }
+
     const kb = el("div", "dock-keys");
-    this.dock.append(kb);
     // C3–C5 white keys + blacks
     const lows = [48, 50, 52, 53, 55, 57, 59, 60, 62, 64, 65, 67, 69, 71, 72];
     const blacks = [
@@ -3901,7 +4038,7 @@ export class JacquardUI {
     const blackWrap = el("div", "dock-blacks");
     kb.append(whiteWrap, blackWrap);
 
-    lows.forEach((note, i) => {
+    lows.forEach((note) => {
       const key = el("button", "dock-key white");
       key.type = "button";
       key.textContent = Pitch.toName(note).replace(/\d+$/, "");
@@ -3917,29 +4054,30 @@ export class JacquardUI {
       this._bindDockKey(key, n);
       blackWrap.append(key);
     });
-
-    this._refreshDockLaneLabel();
+    this.dockPerf.append(kb);
   }
 
   _refreshDockLaneLabel() {
     if (!this.dockLaneLabel) return;
-    // Cycler shows current instrument voice (Kick1 / Hat · new)
+    // Cycler shows current instrument voice (Kit Punch1 / FM Lead · new)
     this.dockLaneLabel.textContent = this.editor.dockVoiceLabel;
     this.dockLaneLabel.title =
-      "Cycle instruments on the canvas (Kick1, Kick2, …). " +
-      "Icons select a voice type even if not placed yet.";
+      "Cycle instruments on the canvas. " +
+      "Icons select a voice type even if not placed yet. " +
+      "Drum kits show pads; synths show a keyboard.";
     this._rebuildDockInstIcons();
+    this._rebuildDockPerf();
   }
 
-  /** Compact type icons flanking the instrument cycler (one per engine family). */
+  /** Compact type icons flanking the instrument cycler (kits + synth families). */
   _rebuildDockInstIcons() {
     if (!this.dockInstLeft || !this.dockInstRight) return;
     this.dockInstLeft.innerHTML = "";
     this.dockInstRight.innerHTML = "";
-    // Representative presets per family (full catalog in ground INST menu)
+    // Drum kits grouped first, then synth family reps (full list: ground INST)
     const keys = [
-      "kick-punch", "snare-crisp", "hat-closed", "bass-sub",
-      "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
+      "kit-punch", "kit-soft", "kit-hard", "kit-room",
+      "bass-sub", "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
       "string-nylon", "wave-soft", "organ-church",
       "dx7-ep", "grain-pad", "samp-keys",
     ];
@@ -3951,14 +4089,21 @@ export class JacquardUI {
     const paint = (host, list) => {
       for (const key of list) {
         const def = InstTypes[key] || InstTypes["fm-lead"];
+        if (!def) continue;
         const isActive = active === key ||
           (activeEntry && def && activeEntry.instrument === def.instrument &&
+            activeEntry.role === def.role &&
             !keys.includes(active) && key === keys.find((k) =>
-              (InstTypes[k]?.instrument) === activeEntry.instrument));
-        const btn = el("button", "dock-inst-icon" + (isActive ? " active" : ""));
+              (InstTypes[k]?.instrument) === activeEntry.instrument &&
+              (InstTypes[k]?.role) === activeEntry.role));
+        const btn = el("button", "dock-inst-icon" + (isActive ? " active" : "") +
+          (def.role === "drum" ? " drum" : ""));
         btn.type = "button";
         btn.textContent = def.label;
-        btn.title = def.name + " — click voice · drag to place (full list: ground ↓ INST)";
+        btn.title = def.name +
+          (def.role === "drum"
+            ? " — drum kit (pads) · drag to place"
+            : " — synth · drag to place (full list: ground ↓ INST)");
         btn.dataset.instType = key;
         this._bindDockInstIcon(btn, key);
         host.append(btn);
@@ -4029,7 +4174,7 @@ export class JacquardUI {
     });
   }
 
-  _bindDockKey(key, note) {
+  _bindDockKey(key, note, ghostLabel = null) {
     key.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -4047,7 +4192,9 @@ export class JacquardUI {
         if (!d) return;
         if (!d.armed && Math.hypot(ev.clientX - d.originX, ev.clientY - d.originY) > 8) {
           d.armed = true;
-          d.ghost = el("div", "dock-note-ghost", Pitch.toName(note));
+          const label = ghostLabel ||
+            (editorIsDrum(this.editor) ? drumNoteLabel(note) : Pitch.toName(note));
+          d.ghost = el("div", "dock-note-ghost", label);
           document.body.append(d.ghost);
         }
         if (d.ghost) {

@@ -12,8 +12,10 @@ import {
   instrumentKey,
   catalogEntry,
   patchFor,
+  isDrumRole,
 } from "./instruments.js";
 import { newFxId, fxOccupies, findFxAt } from "./fx-model.js";
+export { isDrumRole } from "./instruments.js";
 
 /**
  * All instrument params (paginated on the pedal: 3 bars + page dots).
@@ -49,19 +51,27 @@ export const InstTypes = Object.fromEntries(
     instrument: p.engine,
     catalogKey: p.key,
     category: p.category,
+    role: p.role || (isDrumRole(p) ? "drum" : "synth"),
     w: INST_FOOTPRINT_W,
     // grip + 3 bars + page strip
     h: INST_FOOTPRINT_H,
   }]),
 );
-// Legacy aliases so old sketches / dock keys still resolve
+// Legacy aliases so old sketches / dock keys still resolve → kits or synths
 for (const [legacy, key] of Object.entries({
-  fm: "fm-lead", kick: "kick-punch", snare: "snare-crisp", hat: "hat-closed",
+  fm: "fm-lead",
+  kick: "kit-punch", snare: "kit-punch", hat: "kit-punch",
+  "kick-punch": "kit-punch", "snare-crisp": "kit-punch", "hat-closed": "kit-punch",
   bass: "bass-sub", pad: "pad-warm", bell: "bell-chime", pluck: "pluck-nylon",
 })) {
   if (InstTypes[key] && !InstTypes[legacy]) {
     InstTypes[legacy] = { ...InstTypes[key], catalogKey: key };
   }
+}
+
+export function isDrumInstrumentType(typeKey) {
+  const def = InstTypes[typeKey];
+  return !!(def && def.role === "drum");
 }
 
 function abbreviateInst(name) {
