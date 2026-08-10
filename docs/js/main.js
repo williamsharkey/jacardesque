@@ -14,6 +14,7 @@ import {
   fxLatchKey,
   chanLatchKey,
 } from "./fx-model.js";
+import { resolveLaneChannel, ensureInstruments } from "./inst-model.js";
 
 const LOOKAHEAD = 0.12;
 const MAX_VOICES = 32;
@@ -27,6 +28,10 @@ class App {
     this.project.syncGrid();
     this.sequencer = new Sequencer();
     this.sequencer.project = this.project;
+    this.sequencer._laneChannelResolver = (score, lane) => {
+      ensureInstruments(score);
+      return resolveLaneChannel(score, lane);
+    };
     this.audio = new AudioEngine({ maxVoices: MAX_VOICES, lookahead: LOOKAHEAD });
     this.editor = new ScoreEditor({
       project: this.project,

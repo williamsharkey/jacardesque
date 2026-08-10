@@ -10,6 +10,7 @@ import {
   collectPatternTriggers,
   playheadCells,
 } from "./fx-model.js";
+import { resolveLaneChannel, ensureInstruments } from "./inst-model.js";
 
 /**
  * @typedef {object} SimPattern
@@ -85,6 +86,10 @@ export class SongSimulator {
     this.events = [];
     this.sequencer = new Sequencer();
     this.sequencer.setRandomSeed(seed);
+    this.sequencer._laneChannelResolver = (score, lane) => {
+      ensureInstruments(score);
+      return resolveLaneChannel(score, lane);
+    };
     this._fxAutoLatch = new Map();
     this._fxTrigFired = new Map();
     this._patternFire = new Map();

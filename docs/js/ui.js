@@ -37,6 +37,18 @@ import {
   triggerOwnerLabel,
   triggerActionLabel,
 } from "./fx-model.js";
+import {
+  ensureInstruments,
+  findInstAt,
+  InstTypes,
+  InstParamBars,
+  instParamValue,
+  setInstParamValue,
+  instrumentLinkPaths,
+  instrumentColor,
+  laneInstrument,
+  syncInstrumentPatch,
+} from "./inst-model.js";
 
 // ---------------------------------------------------------------------------
 // Value bar ranges
@@ -407,12 +419,16 @@ export class ScoreView {
     this.onPlaceCommit = null;
     /** currently selected fx module id */
     this.selectedFxId = null;
+    /** currently selected instrument module id */
+    this.selectedInstId = null;
     /** currently selected automation node id */
     this.selectedAutoId = null;
     /** currently selected path-send route id */
     this.selectedPathId = null;
     /** (fxId) => void */
     this.onFxSelect = null;
+    /** (instId) => void */
+    this.onInstSelect = null;
     /** (triggerId) => void */
     this.onAutoSelect = null;
     /** (pathId) => void */
@@ -441,6 +457,8 @@ export class ScoreView {
     this._trigDrag = null;
     this._sliderDrag = null;
     this._fxMoveDrag = null;
+    this._instMoveDrag = null;
+    this._instSliderDrag = null;
     this._panning = false;
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
@@ -602,12 +620,65 @@ export class ScoreView {
     const point = Style.cellAt(pos);
     this.setCursor(point);
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
+
+    // Instrument widget hits: grip (move), param sliders (scrub / drag-out as chan)
+    const instHit = this._hitInstWidget(pos);
+    if (instHit) {
+      e.preventDefault();
+      this.selectedInstId = instHit.instId;
+      this.selectedFxId = null;
+      this.selectedAutoId = null;
+      this.selectedPathId = null;
+      this.onInstSelect?.(instHit.instId);
+      if (instHit.kind === "grip") {
+        const mod = this.score.instruments.find((m) => m.id === instHit.instId);
+        this._instMoveDrag = {
+          instId: instHit.instId,
+          origin: pos,
+          startX: mod?.x ?? 0,
+          startY: mod?.y ?? 0,
+          grabCell: point,
+          armed: false,
+        };
+      } else if (instHit.kind === "slider") {
+        const mod = this.score.instruments.find((m) => m.id === instHit.instId);
+        const p = InstParamBars.find((x) => x.key === instHit.paramKey);
+        let value = instHit.hitValue;
+        if (mod && p) {
+          value = Math.min(p.max, Math.max(p.min, instHit.hitValue));
+          if (!Number.isFinite(value)) value = p.def;
+          setInstParamValue(this.sequencer?.project, mod, instHit.paramKey, value);
+          this.onChanParamScrub?.(mod.channel, instHit.paramKey, value);
+        }
+        this._instSliderDrag = {
+          instId: instHit.instId,
+          channel: mod?.channel ?? 1,
+          paramKey: instHit.paramKey,
+          bar: instHit.bar,
+          origin: pos,
+          value,
+          frozenValue: null,
+          scrubbing: true,
+          draggingOut: false,
+          insideInst: true,
+          point,
+        };
+        this._capture(this.canvas, e.pointerId);
+        this.paint();
+        return;
+      }
+      this._capture(this.canvas, e.pointerId);
+      this.paint();
+      return;
+    }
 
     // FX widget hits: grip (move), ON/OFF pads, param sliders (scrub or drag-out)
     const fxHit = this._hitFxWidget(pos);
     if (fxHit) {
       e.preventDefault();
       this.selectedFxId = fxHit.fxId;
+      this.selectedInstId = null;
       this.selectedAutoId = null;
       this.selectedPathId = null;
       this.onFxSelect?.(fxHit.fxId);
@@ -669,6 +740,7 @@ export class ScoreView {
       e.preventDefault();
       this.selectedAutoId = trig.id;
       this.selectedFxId = null;
+      this.selectedInstId = null;
       this.selectedPathId = null;
       this.onAutoSelect?.(trig.id);
       this.paint();
@@ -681,6 +753,7 @@ export class ScoreView {
       e.preventDefault();
       this.selectedAutoId = null;
       this.selectedFxId = null;
+      this.selectedInstId = null;
       this.selectedPathId = null;
       this.onAutoSelect?.(null);
       this._loopDrag = {
@@ -697,11 +770,34 @@ export class ScoreView {
       return;
     }
 
+    // Hit instrument body
+    const inst = findInstAt(this.score, point);
+    if (inst) {
+      e.preventDefault();
+      this.selectedInstId = inst.id;
+      this.selectedFxId = null;
+      this.selectedAutoId = null;
+      this.selectedPathId = null;
+      this.onInstSelect?.(inst.id);
+      this._instMoveDrag = {
+        instId: inst.id,
+        origin: pos,
+        startX: inst.x,
+        startY: inst.y,
+        grabCell: point,
+        armed: false,
+      };
+      this._capture(this.canvas, e.pointerId);
+      this.paint();
+      return;
+    }
+
     // Hit FX module body (select; drag from grip to move — body click selects)
     const fx = findFxAt(this.score, point);
     if (fx) {
       e.preventDefault();
       this.selectedFxId = fx.id;
+      this.selectedInstId = null;
       this.selectedAutoId = null;
       this.selectedPathId = null;
       this.onFxSelect?.(fx.id);
@@ -800,6 +896,7 @@ export class ScoreView {
     // Hover tooltip when idle (no drag gesture)
     if (
       !this._loopDrag && !this._trigDrag && !this._sliderDrag && !this._fxMoveDrag &&
+      !this._instMoveDrag && !this._instSliderDrag &&
       !this._placing && !this._groundGesture && !this._panning && !this._grabbed
     ) {
       this._updateHoverTip(this.localPoint(e));
@@ -807,6 +904,70 @@ export class ScoreView {
 
     if (this._groundGesture) {
       this._updateGroundGesture(e);
+      this.paint();
+      return;
+    }
+
+    if (this._instMoveDrag) {
+      const pos = this.localPoint(e);
+      const d = this._instMoveDrag;
+      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
+      if (!d.armed) {
+        if (dist < 5) return;
+        d.armed = true;
+      }
+      const point = Style.cellAt(pos);
+      const dx = point.x - d.grabCell.x;
+      const dy = point.y - d.grabCell.y;
+      const nx = d.startX + dx;
+      const ny = d.startY + dy;
+      d.hoverX = nx;
+      d.hoverY = ny;
+      if (this.onInstMovePreview?.(d.instId, nx, ny)) {
+        d.lastX = nx;
+        d.lastY = ny;
+      }
+      this.paint();
+      return;
+    }
+
+    if (this._instSliderDrag) {
+      const pos = this.localPoint(e);
+      const d = this._instSliderDrag;
+      const mod = this.score.instruments.find((m) => m.id === d.instId);
+      const point = this.score.wrap(Style.cellAt(pos));
+      d.point = point;
+      const r = mod ? this._fxPixelRect(mod) : null;
+      const inside = r
+        ? (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h)
+        : false;
+      d.insideInst = inside;
+      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
+      if ((!inside && dist > 6) || dist > Math.max(40, (d.bar?.w || 40) * 0.6)) {
+        const dy = Math.abs(pos.y - d.origin.y);
+        const dx = Math.abs(pos.x - d.origin.x);
+        if (!inside || (dy > dx + 12 && dy > 16)) {
+          if (!d.draggingOut) {
+            d.frozenValue = Number.isFinite(d.value) ? d.value : 0;
+            d.value = d.frozenValue;
+          }
+          d.draggingOut = true;
+          d.scrubbing = false;
+        }
+      }
+      if (!d.draggingOut && d.bar && mod) {
+        d.scrubbing = true;
+        const t = Math.min(1, Math.max(0, (pos.x - d.bar.x) / (d.bar.w || 1)));
+        const p = InstParamBars.find((x) => x.key === d.paramKey);
+        if (p) {
+          const v = p.min + t * (p.max - p.min);
+          setInstParamValue(this.sequencer?.project, mod, d.paramKey, v);
+          d.value = v;
+          this.onChanParamScrub?.(mod.channel, d.paramKey, v);
+          this.paint();
+          return;
+        }
+      }
       this.paint();
       return;
     }
@@ -963,6 +1124,37 @@ export class ScoreView {
       } else if (d.snap) {
         // Click without drag — restore any accidental preview
         d.lane.restore(d.snap);
+      }
+      this.paint();
+      return;
+    }
+    if (this._instMoveDrag) {
+      const d = this._instMoveDrag;
+      this._instMoveDrag = null;
+      if (d.armed) {
+        const x = d.lastX ?? d.startX;
+        const y = d.lastY ?? d.startY;
+        this.onInstMoved?.(d.instId, x, y);
+      }
+      this.paint();
+      return;
+    }
+    if (this._instSliderDrag) {
+      const d = this._instSliderDrag;
+      this._instSliderDrag = null;
+      if (d.draggingOut && !d.insideInst && d.point) {
+        const val = Number.isFinite(d.frozenValue)
+          ? d.frozenValue
+          : (Number.isFinite(d.value) ? d.value : 0);
+        this.onTriggerPlaced?.({
+          kind: "chan",
+          channel: d.channel,
+          paramKey: d.paramKey,
+          value: val,
+          point: d.point,
+        });
+      } else if (d.scrubbing) {
+        this.onFxParamChanged?.(true);
       }
       this.paint();
       return;
@@ -1223,10 +1415,20 @@ export class ScoreView {
         mod.y = d.startY;
       }
     }
+    if (this._instMoveDrag) {
+      const d = this._instMoveDrag;
+      const mod = this.score?.instruments?.find((m) => m.id === d.instId);
+      if (mod) {
+        mod.x = d.startX;
+        mod.y = d.startY;
+      }
+    }
     this._loopDrag = null;
     this._trigDrag = null;
     this._sliderDrag = null;
     this._fxMoveDrag = null;
+    this._instMoveDrag = null;
+    this._instSliderDrag = null;
     this._panning = false;
     this._panArmed = false;
     this._endDrag();
@@ -1280,11 +1482,13 @@ export class ScoreView {
     if (!this.score) return;
 
     this._drawLattice(ctx);
+    this._drawInstrumentLinks(ctx);
     this._drawRails(ctx);
     this._drawChains(ctx);
     this._drawLinks(ctx);
     this._drawMarkers(ctx);
     this._drawTiles(ctx);
+    this._drawInstrumentWorld(ctx);
     this._drawFxWorld(ctx);
     this._drawPlayheads(ctx);
     this._drawCursor(ctx);
@@ -1610,19 +1814,33 @@ export class ScoreView {
         y: pos.y,
       };
     } else {
-      const fx = findFxAt(this.score, point);
-      if (fx) {
-        const def = FxTypes[fx.type] || FxTypes.delay;
-        const status = def.patternOp
-          ? ""
-          : (fx.on ? " · ON (insert)" : " · off (bypass)");
+      const inst = findInstAt(this.score, point);
+      if (inst) {
+        const def = InstTypes[inst.type] || InstTypes.fm;
         tip = {
-          kind: "fx",
-          id: fx.id,
-          text: def.name + status + " — drag ON/OFF pads or a slider value onto the grid",
+          kind: "inst",
+          id: inst.id,
+          text: def.name + " · CH" + (inst.channel | 0) +
+            " — lanes bind by nearest end-marker (term) to this left corner; " +
+            "scrub bars or drag a value onto the grid",
           x: pos.x,
           y: pos.y,
         };
+      } else {
+        const fx = findFxAt(this.score, point);
+        if (fx) {
+          const def = FxTypes[fx.type] || FxTypes.delay;
+          const status = def.patternOp
+            ? ""
+            : (fx.on ? " · ON (insert)" : " · off (bypass)");
+          tip = {
+            kind: "fx",
+            id: fx.id,
+            text: def.name + status + " — drag ON/OFF pads or a slider value onto the grid",
+            x: pos.x,
+            y: pos.y,
+          };
+        }
       }
     }
 
@@ -1633,6 +1851,191 @@ export class ScoreView {
     this._hoverTip = tip;
     this.canvas.title = tip?.text || "";
     if (!same) this.paint();
+  }
+
+  /**
+   * Underlight: term → nearest instrument left-corner as NESW staircase of cells.
+   * Drawn under rails/tiles so the grid itself shows the walk path.
+   */
+  _drawInstrumentLinks(ctx) {
+    if (!this.score) return;
+    ensureInstruments(this.score);
+    const links = instrumentLinkPaths(this.score);
+    if (!links.length) return;
+    ctx.save();
+    for (const link of links) {
+      const col = link.color || "#38bdf8";
+      const path = link.path || [];
+      for (let i = 0; i < path.length; i++) {
+        const c = path[i];
+        const r = Style.cellRect(c);
+        const isEnd = i === 0 || i === path.length - 1;
+        ctx.fillStyle = withAlpha(col, isEnd ? 0.28 : 0.16);
+        roundRect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Style.Radius);
+        ctx.fill();
+        // Subtle edge so the staircase reads as a pixel path
+        ctx.strokeStyle = withAlpha(col, isEnd ? 0.55 : 0.28);
+        ctx.lineWidth = 1;
+        roundRect(ctx, r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3, Style.Radius - 1);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  _drawInstrumentWorld(ctx) {
+    if (!this.score) return;
+    ensureInstruments(this.score);
+    const phase = (this._anim || 0) * 0.12;
+    const pulse = 0.55 + 0.45 * Math.sin(phase);
+    for (const mod of this.score.instruments) {
+      this._drawInstrumentModule(ctx, mod, mod.id === this.selectedInstId, pulse);
+    }
+    // Ghost for inst slider drag-out
+    if (this._instSliderDrag?.draggingOut && this._instSliderDrag.point &&
+        !this._instSliderDrag.insideInst) {
+      const pt = this._instSliderDrag.point;
+      const o = Style.cellCenter(pt);
+      const ghostVal = Number.isFinite(this._instSliderDrag.frozenValue)
+        ? this._instSliderDrag.frozenValue
+        : this._instSliderDrag.value;
+      const short = formatAutoShort(this._instSliderDrag.paramKey, ghostVal);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#22d3ee";
+      roundRect(ctx, o.x - 14, o.y - 8, 28, 16, 4);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#1c1917";
+      ctx.font = "700 8px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(short, o.x, o.y);
+    }
+  }
+
+  _instLayout(mod) {
+    const def = InstTypes[mod.type] || InstTypes.fm;
+    const o = Style.cellOrigin({ x: mod.x, y: mod.y });
+    const w = mod.w * Style.StrideX - Style.Gap;
+    const h = mod.h * Style.StrideY - Style.Gap;
+    const pad = 4;
+    const topH = 18;
+    const grip = { x: o.x + pad, y: o.y + pad, w: w - pad * 2, h: topH };
+    const bars = [];
+    let y = o.y + pad + topH + 4;
+    const rowH = 18;
+    for (const p of InstParamBars) {
+      bars.push({
+        key: p.key,
+        label: p.label,
+        min: p.min,
+        max: p.max,
+        def: p.def,
+        row: { x: o.x + pad, y, w: w - pad * 2, h: rowH },
+        bar: { x: o.x + pad + 2, y: y + 3, w: w - pad * 2 - 4, h: 12 },
+      });
+      y += rowH;
+    }
+    return { def, o, w, h, grip, bars, pad, topH };
+  }
+
+  _hitInstWidget(pos) {
+    if (!this.score) return null;
+    ensureInstruments(this.score);
+    for (let i = this.score.instruments.length - 1; i >= 0; i--) {
+      const mod = this.score.instruments[i];
+      const L = this._instLayout(mod);
+      if (pos.x < L.o.x || pos.x > L.o.x + L.w ||
+          pos.y < L.o.y || pos.y > L.o.y + L.h) continue;
+      for (const row of L.bars) {
+        if (this._hitRect(pos, row.row)) {
+          const t = Math.min(1, Math.max(0, (pos.x - row.bar.x) / (row.bar.w || 1)));
+          const hitValue = row.min + t * (row.max - row.min);
+          return {
+            kind: "slider",
+            instId: mod.id,
+            paramKey: row.key,
+            bar: row.bar,
+            hitValue,
+          };
+        }
+      }
+      if (this._hitRect(pos, L.grip)) {
+        return { kind: "grip", instId: mod.id };
+      }
+      return { kind: "grip", instId: mod.id };
+    }
+    return null;
+  }
+
+  _drawInstrumentModule(ctx, mod, selected, pulse) {
+    const L = this._instLayout(mod);
+    const { def, o, w, h, grip, bars } = L;
+    const col = instrumentColor(mod);
+    const project = this.sequencer?.project;
+
+    ctx.save();
+    ctx.fillStyle = selected ? "#1a2838" : "#15202b";
+    ctx.strokeStyle = selected ? "#e0f2fe" : col;
+    ctx.lineWidth = selected ? 2.5 : 1.6;
+    if (selected) {
+      ctx.shadowColor = "#f2f2ee";
+      ctx.shadowBlur = 10;
+    } else {
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 6 + 3 * pulse;
+    }
+    roundRect(ctx, o.x, o.y, w, h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    if (selected) {
+      ctx.strokeStyle = "#f2f2ee";
+      ctx.lineWidth = 2;
+      roundRect(ctx, o.x - 3, o.y - 3, w + 6, h + 6, 8);
+      ctx.stroke();
+    }
+
+    // Grip / type label
+    ctx.fillStyle = selected ? "#334155" : "#1e293b";
+    roundRect(ctx, grip.x, grip.y, grip.w, grip.h, 3);
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(col, 0.7);
+    ctx.lineWidth = 1;
+    roundRect(ctx, grip.x + 0.5, grip.y + 0.5, grip.w - 1, grip.h - 1, 3);
+    ctx.stroke();
+    ctx.fillStyle = "#e0f2fe";
+    ctx.font = "700 9px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(def.label + " · CH" + (mod.channel | 0), grip.x + grip.w / 2, grip.y + grip.h / 2);
+
+    // Param bars from live patch
+    for (const row of bars) {
+      const val = project
+        ? instParamValue(project, mod, row.key)
+        : row.def;
+      const t = (val - row.min) / (row.max - row.min || 1);
+      const b = row.bar;
+      ctx.fillStyle = "#0f172a";
+      roundRect(ctx, b.x, b.y, b.w, b.h, 2);
+      ctx.fill();
+      ctx.fillStyle = col;
+      const fw = Math.max(2, b.w * Math.min(1, Math.max(0, t)));
+      roundRect(ctx, b.x, b.y, fw, b.h, 2);
+      ctx.fill();
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        row.label + " " + formatAutoShort(row.key, val),
+        b.x + 3,
+        b.y + b.h / 2,
+      );
+    }
+    ctx.restore();
   }
 
   _drawFxWorld(ctx) {
@@ -2212,11 +2615,11 @@ export class ScoreView {
   }
 
   _drawCursor(ctx) {
-    // When an FX pedal is selected, selection ring is drawn on the module itself
-    // — never paint a single-cell cursor on top of multi-cell objects.
+    // When an FX/instrument pedal is selected, selection ring is on the module.
     ensureFxLists(this.score);
-    if (this.selectedFxId) {
-      // optional: no cell outline at all while FX is selected
+    ensureInstruments(this.score);
+    if (this.selectedFxId || this.selectedInstId) {
+      // multi-cell object ring handles selection chrome
     } else {
       const r = Style.cellRect(this.cursor);
       ctx.strokeStyle = Style.Cursor;
@@ -2728,6 +3131,16 @@ export class JacquardUI {
       this.editor.clearObjectSelection();
       this.editor.selectedFxId = id;
       this.view.selectedFxId = id;
+      this.view.selectedInstId = null;
+      this.view.selectedAutoId = null;
+      this.view.selectedPathId = null;
+      this.refreshPanels(true);
+    };
+    this.view.onInstSelect = (id) => {
+      this.editor.clearObjectSelection();
+      this.editor.selectedInstId = id;
+      this.view.selectedInstId = id;
+      this.view.selectedFxId = null;
       this.view.selectedAutoId = null;
       this.view.selectedPathId = null;
       this.refreshPanels(true);
@@ -2737,17 +3150,32 @@ export class JacquardUI {
       this.editor.selectedAutoId = id;
       this.view.selectedAutoId = id;
       this.view.selectedFxId = null;
+      this.view.selectedInstId = null;
       this.view.selectedPathId = null;
       this.refreshPanels(true);
     };
-    this.view.onTriggerPlaced = ({ kind, fxId, paramKey, value, point }) => {
+    this.view.onTriggerPlaced = ({ kind, fxId, channel, paramKey, value, point }) => {
       this.editor.placeTrigger({
         kind,
         targetFxId: fxId,
+        channel,
         paramKey,
         value,
         point,
       });
+    };
+    this.view.onChanParamScrub = (channel, paramKey, value) => {
+      this.app.clearChanLatch?.(channel, paramKey);
+      if (paramKey && Number.isFinite(value)) {
+        const t = ParamTargets.parse(paramKey);
+        if (t >= 0) {
+          ParamTargets.set(
+            PatchBank.get(this.editor.project.patches, channel | 0),
+            t,
+            value,
+          );
+        }
+      }
     };
     this.view.onFxParamScrub = (fxId, paramKey, value) => {
       this.app.clearFxLatch?.(fxId, paramKey);
@@ -2770,6 +3198,14 @@ export class JacquardUI {
     };
     this.view.onFxMoved = (id, x, y) => {
       this.editor.commitMoveFx(id, x, y);
+    };
+    this.view.onInstMovePreview = (id, x, y) => {
+      const ok = this.editor.previewMoveInst(id, x, y);
+      if (ok) this.view.paint();
+      return ok;
+    };
+    this.view.onInstMoved = (id, x, y) => {
+      this.editor.commitMoveInst(id, x, y);
     };
     this.view.onIsValidTrigger = (point) => this.editor.isValidTriggerCell(point);
     this.view.onCursorMoved = () => this.refreshPanels();
@@ -3085,6 +3521,7 @@ export class JacquardUI {
     this.view.score = this.app.project.score;
     this.view.sequencer = this.app.sequencer;
     this.view.selectedFxId = this.editor.selectedFxId;
+    this.view.selectedInstId = this.editor.selectedInstId;
     this.view.selectedAutoId = this.editor.selectedAutoId;
     this.view.selectedPathId = this.editor.selectedPathId;
     this.view.rebuild();
@@ -3488,11 +3925,112 @@ export class JacquardUI {
   buildFxPanel() {
     const panel = this.fxPanel;
     ensureFxLists(this.editor.score);
+    ensureInstruments(this.editor.score);
     // Hide FX panel when an auto/path inspector owns the tile panel.
     if (this.editor.selectedAutoId || this.editor.selectedPathId) {
       panel.classList.add("hidden");
       return;
     }
+
+    // Instrument object selected
+    const inst = this.editor.score.instruments.find(
+      (m) => m.id === this.editor.selectedInstId,
+    );
+    if (inst) {
+      panel.classList.remove("hidden");
+      panel.innerHTML = "";
+      const def = InstTypes[inst.type] || InstTypes.fm;
+      panel.append(el("div", "panel-title", def.name + " · CH" + (inst.channel | 0)));
+      const body = el("div", "panel-body");
+      panel.append(body);
+      body.append(el("div", "caption",
+        "Instrument pedal. Lanes bind automatically: each lane’s end/repeat " +
+        "marker walks (N/E/S/W) to the nearest instrument left corner. " +
+        "Many lanes may share one instrument. Scrub bars or drag values " +
+        "onto the grid as cyan channel triggers."));
+      body.append(el("div", "divider"));
+      body.append(chooser(
+        "Type",
+        InstrumentNames,
+        () => Math.min(InstrumentNames.length - 1, Math.max(0,
+          (InstTypes[inst.type]?.instrument) ?? 0)),
+        (i) => {
+          const key = InstrumentKeys[i] || "fm";
+          inst.type = key;
+          syncInstrumentPatch(this.editor.project, inst);
+          this.editor.commit();
+          this.view.paint();
+          this.buildFxPanel();
+        },
+      ));
+      body.append(barRow(
+        "Channel",
+        ChannelRange,
+        () => inst.channel | 0,
+        (v) => {
+          inst.channel = Math.min(PatchBank.Channels, Math.max(1, Math.round(v)));
+          this.editor.commit();
+          this.view.paint();
+        },
+      ));
+      body.append(el("div", "divider"));
+      for (const p of InstParamBars) {
+        const range = p.key === "moddecay"
+          ? Ranges.seconds(p.min, p.max)
+          : Ranges.amount(p.min, p.max);
+        body.append(barRow(
+          p.label,
+          range,
+          () => instParamValue(this.editor.project, inst, p.key),
+          (v) => {
+            setInstParamValue(this.editor.project, inst, p.key, v);
+            this.app.clearChanLatch?.(inst.channel, p.key);
+            this.app.scheduleSave();
+            this.view.paint();
+          },
+          null,
+          {
+            getTicks: () => this.editor.score.fxTriggers
+              .filter((tr) => tr.kind === "chan" &&
+                (tr.channel | 0) === (inst.channel | 0) &&
+                tr.paramKey === p.key)
+              .map((tr) => tr.value),
+            isDragOutValid: (cx, cy) => {
+              const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
+              return this.editor.isValidTriggerCell(point);
+            },
+            onDragOut: (value, cx, cy) => {
+              const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
+              if (!this.editor.isValidTriggerCell(point)) return;
+              const v = Number.isFinite(value) ? value : 0;
+              setInstParamValue(this.editor.project, inst, p.key, v);
+              this.app.clearChanLatch?.(inst.channel, p.key);
+              this.editor.placeTrigger({
+                kind: "chan",
+                channel: inst.channel,
+                paramKey: p.key,
+                value: v,
+                point,
+              });
+              this.canvas.focus();
+            },
+          },
+        ));
+      }
+      body.append(el("div", "divider"));
+      body.append(button("Delete", () => {
+        this.editor.deleteAtCursor();
+        this.editor.clearObjectSelection();
+        this.view.selectedInstId = null;
+        this.view.selectedFxId = null;
+        this.view.selectedAutoId = null;
+        this.view.selectedPathId = null;
+        this.refreshPanels(true);
+        this.canvas.focus();
+      }, 54));
+      return;
+    }
+
     const mod = this.editor.score.fxModules.find((m) => m.id === this.editor.selectedFxId);
     if (!mod) {
       panel.classList.add("hidden");

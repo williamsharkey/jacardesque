@@ -969,6 +969,8 @@ export class Score {
     // Grid-native FX world (insert pedals + adjacency triggers).
     this.fxModules = [];
     this.fxTriggers = [];
+    /** Grid instrument pedals (many lanes → one instrument by nearest term). */
+    this.instruments = [];
     this.pathRoutes = [];
     this.fxRoutes = [];
     this.autoNodes = [];
@@ -1606,6 +1608,7 @@ export const ProjectFormat = {
       writeLane(lines, project.score, lane);
     }
     writeFxWorld(lines, project.score);
+    writeInstruments(lines, project.score);
     return lines.join("\n") + "\n";
   },
 
@@ -1673,6 +1676,9 @@ export const ProjectFormat = {
           break;
         case "fxtrig":
           readFxTrig(score, tokens, number);
+          break;
+        case "inst":
+          readInstrument(score, tokens, number);
           break;
         default:
           throw fail(number, "unknown keyword " + tokens[0]);
@@ -1780,6 +1786,37 @@ function writeFx(fx) {
     " dfb=" + F(fx.delayFeedback) +
     " dtone=" + F(fx.delayTone) +
     " dspread=" + F(fx.delaySpread);
+}
+
+function writeInstruments(lines, score) {
+  for (const m of score.instruments || []) {
+    let s = "inst " + m.type + " " + m.x + " " + m.y +
+      " id=" + m.id +
+      " channel=" + (m.channel | 0);
+    lines.push(s);
+  }
+}
+
+function readInstrument(score, tokens, number) {
+  const type = arg(tokens, 1, number);
+  const x = readInt(arg(tokens, 2, number));
+  const y = readInt(arg(tokens, 3, number));
+  let id = null;
+  let channel = 1;
+  for (let i = 4; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "id") id = v;
+    else if (k === "channel") channel = readInt(v);
+  }
+  if (!score.instruments) score.instruments = [];
+  score.instruments.push({
+    id: id || ("inst-" + score.instruments.length),
+    type: type || "fm",
+    x, y,
+    w: 3,
+    h: 4,
+    channel: Math.min(8, Math.max(1, channel | 0)),
+  });
 }
 
 function writeFxWorld(lines, score) {
@@ -2150,7 +2187,15 @@ export class Runner {
     this._scheduled = [];
   }
 
+  /**
+   * Patch bank channel. Prefer nearest grid instrument to the origin lane's
+   * term (many lanes may share one instrument); else ChannelTile.channel.
+   * Sequencer sets resolveChannel when project is bound.
+   */
   get channel() {
+    if (typeof this._resolveChannel === "function") {
+      return this._resolveChannel(this.originLane);
+    }
     return this.originLane.channel?.channel ?? 1;
   }
 
@@ -2223,12 +2268,30 @@ export class Sequencer {
     return this._runners;
   }
 
+  _bindRunner(runner) {
+    // Late-bind channel resolution so many:1 instrument association applies
+    runner._resolveChannel = (lane) => {
+      try {
+        // Dynamic import path avoided — resolve via project score if helper present
+        const score = this.project?.score;
+        if (!score) return lane?.channel?.channel ?? 1;
+        // Inline nearest-instrument so core doesn't hard-depend on inst-model at parse
+        const resolve = this._laneChannelResolver;
+        if (typeof resolve === "function") return resolve(score, lane);
+        return lane?.channel?.channel ?? 1;
+      } catch (_) {
+        return lane?.channel?.channel ?? 1;
+      }
+    };
+    return runner;
+  }
+
   play(currentSample, lookaheadSamples) {
     this.stop();
     const start = currentSample + lookaheadSamples;
     let order = 0;
     for (const lane of this.project.score.channelLanes) {
-      this._runners.push(new Runner(lane, order++, start));
+      this._runners.push(this._bindRunner(new Runner(lane, order++, start)));
     }
     this._playing = this._runners.length > 0;
   }
@@ -2264,7 +2327,7 @@ export class Sequencer {
       let next = origin + (totalSteps + 1) * stepSamples;
       if (next < now + 1) next = now + stepSamples;
 
-      const runner = new Runner(lane, order++, next);
+      const runner = this._bindRunner(new Runner(lane, order++, next));
       runner.stepIndex = stepIndex;
       runner.pass = pass;
       runner.lane = lane;
@@ -2297,7 +2360,7 @@ export class Sequencer {
       if (!this.project.score.lanes.includes(runner.lane)) runner.lane = lane;
       if (runner.stepIndex >= runner.lane.steps.length) runner.stepIndex = 0;
       runner.order = order++;
-      this._runners.push(runner);
+      this._runners.push(this._bindRunner(runner));
     }
     this._playing = this._runners.length > 0;
   }

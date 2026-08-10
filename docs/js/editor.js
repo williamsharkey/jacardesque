@@ -24,6 +24,17 @@ import {
   autoParamDef,
   triggerAdjacentToAnyLane,
 } from "./fx-model.js";
+import {
+  createInstrumentModule,
+  ensureInstruments,
+  findInstAt,
+  nextInstrumentChannel,
+  canPlaceInstrumentAt,
+  removeInstrument,
+  syncInstrumentPatch,
+  resolveLaneChannel,
+  InstTypes,
+} from "./inst-model.js";
 
 export class ScoreEditor {
   constructor({ project, sequencer, audio, getCursor, setCursor }) {
@@ -37,6 +48,7 @@ export class ScoreEditor {
     this._notePitch = 60;
     this._noteLength = 1;
     this.selectedFxId = null;
+    this.selectedInstId = null;
     this.selectedAutoId = null; // selected trigger id
     this.selectedPathId = null;
     this.focusLaneIndex = 0; // dock keyboard target lane
@@ -44,6 +56,7 @@ export class ScoreEditor {
 
   clearObjectSelection() {
     this.selectedFxId = null;
+    this.selectedInstId = null;
     this.selectedAutoId = null;
     this.selectedPathId = null;
   }
@@ -106,11 +119,13 @@ export class ScoreEditor {
     return this.score.placementLane(point) != null;
   }
 
-  /** Empty world cell — ground menu (new lane, FX, META), not pan. */
+  /** Empty world cell — ground menu (new lane, INST, FX), not pan. */
   canOpenGroundMenu(point) {
     if (!point) return false;
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     if (findFxAt(this.score, point)) return false;
+    if (findInstAt(this.score, point)) return false;
     if (findTriggerAt(this.score, point)) return false;
     const cell = this.score.at(point);
     if (cell.kind !== CellKind.Empty) return false;
@@ -120,6 +135,7 @@ export class ScoreEditor {
   menuModeAt(point) {
     if (findTriggerAt(this.score, point)) return null;
     if (findFxAt(this.score, point)) return null;
+    if (findInstAt(this.score, point)) return null;
     if (this.canPlaceTileAt(point)) return "lane";
     if (this.canOpenGroundMenu(point)) return "ground";
     return null;
@@ -156,17 +172,38 @@ export class ScoreEditor {
       return this.createLaneFromPath(spec.path);
     }
 
+    // Instrument pedals — many lanes bind by nearest term → left corner
+    if (spec.kind === "INST") {
+      ensureInstruments(this.score);
+      const type = spec.instType || "fm";
+      const def = InstTypes[type] || InstTypes.fm;
+      if (!canPlaceInstrumentAt(this.score, point.x, point.y, def.w, def.h)) {
+        return false;
+      }
+      const channel = nextInstrumentChannel(this.score);
+      const mod = createInstrumentModule(type, point.x, point.y, { channel });
+      this.score.instruments.push(mod);
+      syncInstrumentPatch(this.project, mod);
+      this.clearObjectSelection();
+      this.selectedInstId = mod.id;
+      this.commit();
+      return true;
+    }
+
     // FX pedals land on free ground (not on lane cells).
     if (spec.kind === "FX") {
       ensureFxLists(this.score);
-      if (findFxAt(this.score, point)) return false;
+      ensureInstruments(this.score);
+      if (findFxAt(this.score, point) || findInstAt(this.score, point)) return false;
       // Claim a small rect free of lanes
       const type = spec.fxType || "delay";
       const def = FxTypes[type] || FxTypes.delay;
       for (let dy = 0; dy < def.h; dy++) {
         for (let dx = 0; dx < def.w; dx++) {
           const p = gp(point.x + dx, point.y + dy);
-          if (!this.score.isFree(p) || findFxAt(this.score, p)) return false;
+          if (!this.score.isFree(p) || findFxAt(this.score, p) || findInstAt(this.score, p)) {
+            return false;
+          }
         }
       }
       const mod = createFxModule(type, point.x, point.y);
@@ -226,8 +263,10 @@ export class ScoreEditor {
    */
   placeTrigger({ kind, targetFxId, channel, paramKey, value, point }) {
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     if (!point) return false;
     if (findFxAt(this.score, point)) return false;
+    if (findInstAt(this.score, point)) return false;
     const cell = this.score.at(point);
     if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head ||
         cell.kind === CellKind.Term || cell.kind === CellKind.Rail) {
@@ -286,12 +325,20 @@ export class ScoreEditor {
 
   deleteAtCursor() {
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     const point = this.getCursor();
     const fx = findFxAt(this.score, point);
     if (fx) {
       removeFxModule(this.score, fx.id);
       if (this.selectedFxId === fx.id) this.selectedFxId = null;
       this.selectedAutoId = null;
+      this.commit();
+      return;
+    }
+    const inst = findInstAt(this.score, point);
+    if (inst) {
+      removeInstrument(this.score, inst.id);
+      if (this.selectedInstId === inst.id) this.selectedInstId = null;
       this.commit();
       return;
     }
@@ -313,18 +360,22 @@ export class ScoreEditor {
     return this.put({ kind: "NOTE", note });
   }
 
-  /** Preview pitch on focus lane channel. */
+  /** Preview pitch on focus lane channel (via nearest instrument if any). */
   auditionNote(note) {
     const lane = this.focusLane || this.selectedLane;
-    const ch = lane?.channel?.channel ?? this.channel ?? 1;
+    const ch = lane
+      ? resolveLaneChannel(this.score, lane)
+      : (this.channel ?? 1);
     this.preview(note, ch);
     this._notePitch = note;
   }
 
   isValidTriggerCell(point) {
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     if (!point) return false;
     if (findFxAt(this.score, point)) return false;
+    if (findInstAt(this.score, point)) return false;
     if (findTriggerAt(this.score, point)) return true; // replace ok
     const cell = this.score.at(point);
     if (cell.kind !== CellKind.Empty) return false;
@@ -519,12 +570,21 @@ export class ScoreEditor {
     this.setCursor(gp(c.x + dx, c.y + dy));
   }
 
-  /** Shift+arrows: move selected FX / trigger / tile in place. */
+  /** Shift+arrows: move selected FX / instrument / trigger / tile in place. */
   nudgeSelected(dx, dy) {
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     if (this.selectedFxId) {
       const mod = this.score.fxModules.find((m) => m.id === this.selectedFxId);
       if (mod && this.tryMoveFx(mod, mod.x + dx, mod.y + dy)) {
+        this.setCursor(gp(mod.x, mod.y));
+        this.commit();
+      }
+      return;
+    }
+    if (this.selectedInstId) {
+      const mod = this.score.instruments.find((m) => m.id === this.selectedInstId);
+      if (mod && this.tryMoveInst(mod, mod.x + dx, mod.y + dy)) {
         this.setCursor(gp(mod.x, mod.y));
         this.commit();
       }
@@ -538,7 +598,7 @@ export class ScoreEditor {
             (np.x === trig.x && np.y === trig.y)) {
           // Allow free empty cells
           if (this.score.isFree(np) || findTriggerAt(this.score, np)?.id === trig.id) {
-            if (!findFxAt(this.score, np)) {
+            if (!findFxAt(this.score, np) && !findInstAt(this.score, np)) {
               trig.x = np.x;
               trig.y = np.y;
               this.setCursor(np);
@@ -635,15 +695,17 @@ export class ScoreEditor {
     this.transpose(delta);
   }
 
-  /** True if fx module can occupy (x,y) without overlapping lanes/other FX. */
+  /** True if fx module can occupy (x,y) without overlapping lanes/other FX/inst. */
   canPlaceFxAt(mod, x, y) {
     ensureFxLists(this.score);
+    ensureInstruments(this.score);
     for (let dy = 0; dy < mod.h; dy++) {
       for (let dx = 0; dx < mod.w; dx++) {
         const p = this.score.wrap(gp(x + dx, y + dy));
         if (!this.score.isFree(p)) return false;
         const other = findFxAt(this.score, p);
         if (other && other.id !== mod.id) return false;
+        if (findInstAt(this.score, p)) return false;
       }
     }
     return true;
@@ -660,6 +722,17 @@ export class ScoreEditor {
     return true;
   }
 
+  tryMoveInst(mod, x, y) {
+    const W = this.score.gridW || 32;
+    const H = this.score.gridH || 16;
+    x = ((x % W) + W) % W;
+    y = ((y % H) + H) % H;
+    if (!canPlaceInstrumentAt(this.score, x, y, mod.w, mod.h, mod.id)) return false;
+    mod.x = x;
+    mod.y = y;
+    return true;
+  }
+
   /** Live preview while dragging (no commit). */
   previewMoveFx(id, x, y) {
     const mod = this.score.fxModules.find((m) => m.id === id);
@@ -671,6 +744,23 @@ export class ScoreEditor {
     const mod = this.score.fxModules.find((m) => m.id === id);
     if (!mod) return false;
     if (!this.tryMoveFx(mod, x, y)) return false;
+    this.setCursor(gp(mod.x, mod.y));
+    this.commit();
+    return true;
+  }
+
+  previewMoveInst(id, x, y) {
+    ensureInstruments(this.score);
+    const mod = this.score.instruments.find((m) => m.id === id);
+    if (!mod) return false;
+    return this.tryMoveInst(mod, x, y);
+  }
+
+  commitMoveInst(id, x, y) {
+    ensureInstruments(this.score);
+    const mod = this.score.instruments.find((m) => m.id === id);
+    if (!mod) return false;
+    if (!this.tryMoveInst(mod, x, y)) return false;
     this.setCursor(gp(mod.x, mod.y));
     this.commit();
     return true;

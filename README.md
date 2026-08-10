@@ -83,7 +83,8 @@ Click empty ground:
 | Move tile / lane | Drag tile or **CHAN** head |
 | Reshape loop | Drag 𝄋 start or end handle |
 | New freeform lane | Empty cell → drag L/U/R, paint path, release |
-| Place FX pedal | Empty cell → drag **down** → pick DELAY/REVERB/… |
+| Place instrument | Empty cell → drag **down** → **INST** → Kick/Hat/… (lanes bind by nearest term) |
+| Place FX pedal | Empty cell → drag **down** → **FX** → DELAY/REVERB/… |
 | Automate FX param | Scrub pedal slider → drag value off onto a cell **beside** a step |
 | Automate instrument | Select **CHAN** → Sound panel → drag bar off onto grid |
 | Engage insert mid-phrase | Drag green **ON** beside start step; **OFF** beside end step |

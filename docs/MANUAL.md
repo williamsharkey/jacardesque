@@ -40,7 +40,7 @@ Click an **empty cell** (not on a lane). A grid-native shell appears:
 | Zone | Gesture |
 | --- | --- |
 | **Left / above / right** of the cell | Drag that way → **draw a new lane** (path follows the pointer; stays in lane mode even if you later go down) |
-| **One row below** the cell | Drag down → **create object** menu (FX pedals only) |
+| **One row below** the cell | Drag down → **create object** menu (**INST** instruments + **FX** pedals) |
 
 Release on an item to place it. Click without leaving the cell to dismiss.
 
@@ -77,6 +77,15 @@ Select a **CHAN** head → **Sound** panel.
 When the playhead lights a step **adjacent** to that chip, the channel param latches to the chip value.
 
 ---
+
+## Grid instruments
+
+Instrument pedals sit on free ground (place menu **INST**: Kick, Snare, Hat, …).
+
+- **Many lanes → one instrument**: each channel lane’s **end/repeat** marker (term) binds to the **nearest** instrument measured by Manhattan distance to that instrument’s **left-corner** cell.
+- **Underlight path**: the grid highlights the NESW **staircase of cells** from the term to that corner (not a single canvas line) so you can see the walk.
+- Pedals work like FX: grip to move, scrub param bars, drag a value off onto the grid as a cyan **channel** trigger.
+- If no instrument objects exist, lanes fall back to the classic channel number on the CHAN head.
 
 ## Grid FX (inserts)
 

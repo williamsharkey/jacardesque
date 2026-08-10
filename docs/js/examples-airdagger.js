@@ -23,6 +23,11 @@ import {
   createFxTrigger,
   ensureFxLists,
 } from "./fx-model.js";
+import {
+  createInstrumentModule,
+  ensureInstruments,
+  syncInstrumentPatch,
+} from "./inst-model.js";
 
 function N(name) {
   return Pitch.tryParse(name) ?? 60;
@@ -66,7 +71,7 @@ function base(letter, title, haiku, nextId) {
   p.haiku = haiku;
   p.tempo = 128;
   p.gridW = 48;
-  p.gridH = 20;
+  p.gridH = 24;
   p.syncGrid();
   ensureFxLists(p.score);
   p._suiteId = "air-dagger";
@@ -114,6 +119,30 @@ function paintInstruments(p) {
   setPatch(p, 8, "fm", { level: 0.0 }); // silent form lane
 }
 
+/** Grid instrument pedals — lanes bind by nearest term → left corner. */
+function placeVoice(p, type, channel, x, y, id) {
+  ensureInstruments(p.score);
+  const m = createInstrumentModule(type, x, y, { id, channel });
+  p.score.instruments.push(m);
+  syncInstrumentPatch(p, m);
+  // Preserve intentional patch tweaks already applied via setPatch
+  return m;
+}
+
+function placeVoiceBank(p, letter) {
+  // Place just under each voice’s term so nearest-left-corner association is stable
+  // (many lanes → one instrument still works when terms cluster).
+  // Keep clear of FX pedals around x≥20,y≤4.
+  const tag = "ad-" + letter.toLowerCase();
+  placeVoice(p, "kick", 1, 18, 2, tag + "-kik");   // kick term ~17,1
+  placeVoice(p, "hat", 2, 17, 4, tag + "-hat");     // hats term ~16,3
+  placeVoice(p, "bass", 3, 16, 6, tag + "-bas");    // bass term ~15,5
+  placeVoice(p, "pad", 4, 23, 8, tag + "-pad");     // pad term ~22,7
+  placeVoice(p, "snare", 5, 12, 4, tag + "-snr");
+  placeVoice(p, "pluck", 6, 11, 10, tag + "-plk");
+  placeVoice(p, "bell", 7, 7, 12, tag + "-bel");
+}
+
 // ---------------------------------------------------------------------------
 // A — Foundation: 4/4 kick, 15-hat, 14-bass, 21-pad; delay room opens
 // ---------------------------------------------------------------------------
@@ -122,6 +151,7 @@ function patternA() {
     "Black pulse under glass / fifteens scrape against the kick / seven never lands",
     AIR_DAGGER_IDS.b);
   paintInstruments(p);
+  placeVoiceBank(p, "A");
 
   const kick = p.score.addLane(1, 1, ch(1, 16, "Kick"), 16);
   for (const i of [0, 4, 8, 12]) fill(kick, i, new NoteTile(N("C2"), 0.85));
@@ -193,6 +223,7 @@ function patternB() {
     "Snare of five teeth / filter winds the minor third / three-pluck needles",
     AIR_DAGGER_IDS.c);
   paintInstruments(p);
+  placeVoiceBank(p, "B");
   setPatch(p, 1, "kick", { level: 0.72 });
   setPatch(p, 5, "snare", { level: 0.55 });
 
@@ -276,6 +307,7 @@ function patternC() {
     "Hollow bar of seven / branch eats the snare then returns / bells of five remain",
     AIR_DAGGER_IDS.d);
   paintInstruments(p);
+  placeVoiceBank(p, "C");
   setPatch(p, 1, "kick", { level: 0.55 });
   setPatch(p, 7, "bell", { level: 0.32, reverbSend: 0.45 });
 
@@ -358,6 +390,7 @@ function patternD() {
     "All cycles collide / dagger drawn across the bus / four bars then return",
     AIR_DAGGER_IDS.a);
   paintInstruments(p);
+  placeVoiceBank(p, "D");
   setPatch(p, 1, "kick", { level: 0.82 });
   setPatch(p, 5, "snare", { level: 0.58 });
   setPatch(p, 6, "pluck", { level: 0.42 });

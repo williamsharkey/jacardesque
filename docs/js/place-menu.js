@@ -57,11 +57,26 @@ export function buildLaneCategories(centreNote = 60) {
 }
 
 /**
- * Empty-ground object menu: audio FX only (no LANE — lanes are L/U/R drag).
+ * Empty-ground object menu: INST + FX (no LANE — lanes are L/U/R drag).
  * Pattern +/− chips: drag transport ‹ › onto the grid.
+ * Instruments are many:1 with lanes (nearest term → left corner).
  */
 export function buildGroundObjectCategories() {
   return [
+    {
+      id: "inst",
+      label: "INST",
+      items: [
+        { label: "KICK", place: { kind: "INST", instType: "kick" } },
+        { label: "SNARE", place: { kind: "INST", instType: "snare" } },
+        { label: "HAT", place: { kind: "INST", instType: "hat" } },
+        { label: "BASS", place: { kind: "INST", instType: "bass" } },
+        { label: "PAD", place: { kind: "INST", instType: "pad" } },
+        { label: "BELL", place: { kind: "INST", instType: "bell" } },
+        { label: "PLUCK", place: { kind: "INST", instType: "pluck" } },
+        { label: "FM", place: { kind: "INST", instType: "fm" } },
+      ],
+    },
     {
       id: "fx",
       label: "FX",
