@@ -639,16 +639,54 @@ button.lock-label:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 
 .dock-lane-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--label);
-  min-width: 120px;
+  min-width: 88px;
+  max-width: 120px;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-inst-icons {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: nowrap;
+}
+
+.dock-inst-icon {
+  appearance: none;
+  border: 1px solid var(--panel-line);
+  background: #1c1c24;
+  color: #a1a1aa;
+  font: 700 8px system-ui, sans-serif;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 4px;
+  cursor: grab;
+  letter-spacing: 0.02em;
+}
+
+.dock-inst-icon:hover {
+  color: #f4f4f0;
+  border-color: #52525b;
+  background: #27272f;
+}
+
+.dock-inst-icon.active {
+  color: #0c0c10;
+  background: #38bdf8;
+  border-color: #7dd3fc;
 }
 
 .dock-keys {

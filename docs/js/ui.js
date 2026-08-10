@@ -46,7 +46,9 @@ import {
   setInstParamValue,
   instrumentLinkPaths,
   instrumentColor,
-  laneInstrument,
+  instrumentInstanceName,
+  instrumentShortLabel,
+  canPlaceInstrumentAt,
   syncInstrumentPatch,
 } from "./inst-model.js";
 
@@ -459,6 +461,8 @@ export class ScoreView {
     this._fxMoveDrag = null;
     this._instMoveDrag = null;
     this._instSliderDrag = null;
+    /** Selected-object delete badge hit target: { kind, id, x, y, r } */
+    this._deleteBadge = null;
     this._panning = false;
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
@@ -621,6 +625,14 @@ export class ScoreView {
     this.setCursor(point);
     ensureFxLists(this.score);
     ensureInstruments(this.score);
+
+    // Delete badge on selected object (little ✕ top-right)
+    if (this._hitDeleteBadge(pos)) {
+      e.preventDefault();
+      this.onDeleteSelection?.();
+      this.paint();
+      return;
+    }
 
     // Instrument widget hits: grip (move), param sliders (scrub / drag-out as chan)
     const instHit = this._hitInstWidget(pos);
@@ -1480,6 +1492,7 @@ export class ScoreView {
     ctx.fillStyle = Style.Background;
     ctx.fillRect(0, 0, w, h);
     if (!this.score) return;
+    this._deleteBadge = null;
 
     this._drawLattice(ctx);
     this._drawInstrumentLinks(ctx);
@@ -1857,6 +1870,41 @@ export class ScoreView {
    * Underlight: term → nearest instrument left-corner as NESW staircase of cells.
    * Drawn under rails/tiles so the grid itself shows the walk path.
    */
+  _hitDeleteBadge(pos) {
+    const b = this._deleteBadge;
+    if (!b) return false;
+    const dx = pos.x - b.x;
+    const dy = pos.y - b.y;
+    return dx * dx + dy * dy <= (b.r + 2) * (b.r + 2);
+  }
+
+  /** Circle ✕ at top-right of a selected object; records hit target. */
+  _drawDeleteBadge(ctx, pixelRect, kind, id) {
+    const r = 8;
+    const x = pixelRect.x + pixelRect.w - r - 2;
+    const y = pixelRect.y + r + 2;
+    this._deleteBadge = { kind, id, x, y, r };
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#f87171";
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.25;
+    ctx.stroke();
+    ctx.strokeStyle = "#7f1d1d";
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = "round";
+    const s = 3.2;
+    ctx.beginPath();
+    ctx.moveTo(x - s, y - s);
+    ctx.lineTo(x + s, y + s);
+    ctx.moveTo(x + s, y - s);
+    ctx.lineTo(x - s, y + s);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   _drawInstrumentLinks(ctx) {
     if (!this.score) return;
     ensureInstruments(this.score);
@@ -2005,11 +2053,12 @@ export class ScoreView {
     ctx.lineWidth = 1;
     roundRect(ctx, grip.x + 0.5, grip.y + 0.5, grip.w - 1, grip.h - 1, 3);
     ctx.stroke();
+    const title = instrumentShortLabel(this.score, mod);
     ctx.fillStyle = "#e0f2fe";
     ctx.font = "700 9px system-ui,sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(def.label + " · CH" + (mod.channel | 0), grip.x + grip.w / 2, grip.y + grip.h / 2);
+    ctx.fillText(title, grip.x + grip.w / 2, grip.y + grip.h / 2);
 
     // Param bars from live patch
     for (const row of bars) {
@@ -2034,6 +2083,9 @@ export class ScoreView {
         b.x + 3,
         b.y + b.h / 2,
       );
+    }
+    if (selected) {
+      this._drawDeleteBadge(ctx, { x: o.x, y: o.y, w, h }, "inst", mod.id);
     }
     ctx.restore();
   }
@@ -2105,6 +2157,11 @@ export class ScoreView {
     ctx.font = "600 7px system-ui,sans-serif";
     ctx.fillStyle = withAlpha("#1c1917", 0.75);
     ctx.fillText(owner, cx, cy + 6);
+    if (selected) {
+      this._drawDeleteBadge(ctx, {
+        x: r.x, y: r.y, w: r.w, h: r.h,
+      }, "trig", trig.id);
+    }
     ctx.restore();
   }
 
@@ -2241,6 +2298,9 @@ export class ScoreView {
         b.x + 3,
         b.y + b.h / 2,
       );
+    }
+    if (selected) {
+      this._drawDeleteBadge(ctx, { x: o.x, y: o.y, w, h }, "fx", mod.id);
     }
     ctx.restore();
   }
@@ -3139,11 +3199,25 @@ export class JacquardUI {
     this.view.onInstSelect = (id) => {
       this.editor.clearObjectSelection();
       this.editor.selectedInstId = id;
+      this.editor.focusInstId = id;
+      const inst = this.editor.score.instruments.find((m) => m.id === id);
+      if (inst) this.editor.dockVoiceKey = inst.type;
       this.view.selectedInstId = id;
       this.view.selectedFxId = null;
       this.view.selectedAutoId = null;
       this.view.selectedPathId = null;
+      this._refreshDockLaneLabel();
       this.refreshPanels(true);
+    };
+    this.view.onDeleteSelection = () => {
+      this.editor.deleteSelection();
+      this.view.selectedFxId = this.editor.selectedFxId;
+      this.view.selectedInstId = this.editor.selectedInstId;
+      this.view.selectedAutoId = this.editor.selectedAutoId;
+      this._refreshDockLaneLabel();
+      this.refreshPanels(true);
+      this.view.paint();
+      this.canvas.focus();
     };
     this.view.onAutoSelect = (id) => {
       this.editor.clearObjectSelection();
@@ -3276,12 +3350,17 @@ export class JacquardUI {
     this.canvas.focus();
   }
 
-  /** Fixed bottom keyboard: audition focus lane, drag keys onto steps. */
+  /** Fixed bottom keyboard: instrument voice + piano; drag keys / icons onto grid. */
   _buildDockKeyboard() {
     this.dock = el("div", "dock-keyboard");
     this.body.append(this.dock);
 
     const laneRow = el("div", "dock-lane-row");
+
+    // Compact instrument type shortcuts (left of cycler)
+    this.dockInstLeft = el("div", "dock-inst-icons");
+    laneRow.append(this.dockInstLeft);
+
     laneRow.append(button("‹", () => {
       this.editor.cycleFocusLane(-1);
       this._refreshDockLaneLabel();
@@ -3294,7 +3373,13 @@ export class JacquardUI {
       this._refreshDockLaneLabel();
       this.canvas.focus();
     }, 28));
+
+    // Compact instrument type shortcuts (right of cycler)
+    this.dockInstRight = el("div", "dock-inst-icons");
+    laneRow.append(this.dockInstRight);
+
     this.dock.append(laneRow);
+    this._rebuildDockInstIcons();
 
     const kb = el("div", "dock-keys");
     this.dock.append(kb);
@@ -3331,15 +3416,100 @@ export class JacquardUI {
   }
 
   _refreshDockLaneLabel() {
-    const lane = this.editor.focusLane;
     if (!this.dockLaneLabel) return;
-    if (!lane) {
-      this.dockLaneLabel.textContent = "No lane";
-      return;
-    }
-    const name = lane.channel?.displayName || lane.channel?.shortName || "Lane";
-    const i = this.editor.score.channelLanes.indexOf(lane) + 1;
-    this.dockLaneLabel.textContent = i + " · " + name;
+    // Cycler shows current instrument voice (Kick1 / Hat · new)
+    this.dockLaneLabel.textContent = this.editor.dockVoiceLabel;
+    this.dockLaneLabel.title =
+      "Cycle instruments on the canvas (Kick1, Kick2, …). " +
+      "Icons select a voice type even if not placed yet.";
+    this._rebuildDockInstIcons();
+  }
+
+  /** Compact type icons flanking the instrument cycler. */
+  _rebuildDockInstIcons() {
+    if (!this.dockInstLeft || !this.dockInstRight) return;
+    this.dockInstLeft.innerHTML = "";
+    this.dockInstRight.innerHTML = "";
+    const keys = InstrumentKeys;
+    const mid = Math.ceil(keys.length / 2);
+    const leftKeys = keys.slice(0, mid);
+    const rightKeys = keys.slice(mid);
+    const active = this.editor.dockVoiceKey;
+    const paint = (host, list) => {
+      for (const key of list) {
+        const def = InstTypes[key] || InstTypes.fm;
+        const btn = el("button", "dock-inst-icon" + (key === active ? " active" : ""));
+        btn.type = "button";
+        btn.textContent = def.label;
+        btn.title = def.name + " — click to select voice · drag onto grid to place";
+        btn.dataset.instType = key;
+        this._bindDockInstIcon(btn, key);
+        host.append(btn);
+      }
+    };
+    paint(this.dockInstLeft, leftKeys);
+    paint(this.dockInstRight, rightKeys);
+  }
+
+  _bindDockInstIcon(btn, typeKey) {
+    btn.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Select voice immediately (even if not on canvas)
+      this.editor.setDockVoiceType(typeKey);
+      this._refreshDockLaneLabel();
+      btn.setPointerCapture(e.pointerId);
+      const origin = { x: e.clientX, y: e.clientY };
+      let armed = false;
+      let ghost = null;
+      const def = InstTypes[typeKey] || InstTypes.fm;
+
+      const move = (ev) => {
+        const dist = Math.hypot(ev.clientX - origin.x, ev.clientY - origin.y);
+        if (!armed && dist > 8) {
+          armed = true;
+          ghost = el("div", "dock-note-ghost", def.label);
+          ghost.style.background = "#38bdf8";
+          document.body.append(ghost);
+        }
+        if (ghost) {
+          ghost.style.left = ev.clientX + 8 + "px";
+          ghost.style.top = ev.clientY + 8 + "px";
+          const point = this.view.score && Style.cellAt(this.view.localPoint(ev));
+          const valid = point && canPlaceInstrumentAt(
+            this.editor.score, point.x, point.y, def.w, def.h,
+          );
+          ghost.classList.toggle("valid", !!valid);
+          ghost.style.opacity = valid ? "1" : "0.5";
+        }
+      };
+
+      const up = (ev) => {
+        try { btn.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+        btn.removeEventListener("pointermove", move);
+        btn.removeEventListener("pointerup", up);
+        btn.removeEventListener("pointercancel", up);
+        if (ghost) ghost.remove();
+        if (armed) {
+          const point = Style.cellAt(this.view.localPoint(ev));
+          if (point) {
+            const mod = this.editor.placeInstrument(typeKey, point, point);
+            if (mod) {
+              this.view.selectedInstId = mod.id;
+              this._refreshDockLaneLabel();
+              this.refreshPanels?.(true);
+              this.view.paint();
+            }
+          }
+        }
+        this.canvas.focus();
+      };
+
+      btn.addEventListener("pointermove", move);
+      btn.addEventListener("pointerup", up);
+      btn.addEventListener("pointercancel", up);
+    });
   }
 
   _bindDockKey(key, note) {
@@ -3384,7 +3554,8 @@ export class JacquardUI {
           const point = Style.cellAt(this.view.localPoint(ev));
           if (point && this.editor.canDropNoteAt(point)) {
             this.editor.placeNoteAt(point, note);
-            this.syncDockLaneLabel?.();
+            this._refreshDockLaneLabel();
+            this.refreshPanels?.(true);
             this.view.paint();
           }
         }

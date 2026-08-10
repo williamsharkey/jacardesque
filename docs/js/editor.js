@@ -37,7 +37,10 @@ import {
   syncInstrumentPatch,
   resolveLaneChannel,
   InstTypes,
+  instrumentInstanceName,
+  findInstrumentSpawnCell,
 } from "./inst-model.js";
+import { InstrumentKeys, patchFor } from "./instruments.js";
 
 export class ScoreEditor {
   constructor({ project, sequencer, audio, getCursor, setCursor }) {
@@ -55,6 +58,10 @@ export class ScoreEditor {
     this.selectedAutoId = null; // selected trigger id
     this.selectedPathId = null;
     this.focusLaneIndex = 0; // dock keyboard target lane
+    /** Dock voice: focused instrument instance id (canvas), or null. */
+    this.focusInstId = null;
+    /** Dock voice type when no instance focused / not yet on canvas. */
+    this.dockVoiceKey = "fm";
   }
 
   clearObjectSelection() {
@@ -72,10 +79,156 @@ export class ScoreEditor {
   }
 
   cycleFocusLane(delta) {
+    // Prefer cycling canvas instrument instances (Kick1, Kick2, …)
+    ensureInstruments(this.score);
+    if (this.score.instruments.length) {
+      this.cycleFocusInstrument(delta);
+      return;
+    }
     const n = this.score.channelLanes.length;
-    if (!n) return;
+    if (!n) {
+      this.cycleDockVoiceType(delta);
+      return;
+    }
     this.focusLaneIndex = ((this.focusLaneIndex + delta) % n + n) % n;
     this.onTouched?.();
+  }
+
+  /** Cycle among placed instruments; if none, cycle instrument types. */
+  cycleFocusInstrument(delta) {
+    ensureInstruments(this.score);
+    const list = this.score.instruments;
+    if (!list.length) {
+      this.cycleDockVoiceType(delta);
+      return;
+    }
+    let idx = list.findIndex((m) => m.id === this.focusInstId);
+    if (idx < 0) idx = 0;
+    else idx = ((idx + delta) % list.length + list.length) % list.length;
+    this.focusInstId = list[idx].id;
+    this.dockVoiceKey = list[idx].type;
+    this.onTouched?.();
+  }
+
+  cycleDockVoiceType(delta) {
+    const keys = InstrumentKeys;
+    let i = keys.indexOf(this.dockVoiceKey);
+    if (i < 0) i = 0;
+    i = ((i + delta) % keys.length + keys.length) % keys.length;
+    this.dockVoiceKey = keys[i];
+    this.focusInstId = null;
+    this.onTouched?.();
+  }
+
+  /** Select a voice type for the keyboard (may not exist on canvas yet). */
+  setDockVoiceType(typeKey) {
+    const key = InstrumentKeys.includes(typeKey) ? typeKey : "fm";
+    this.dockVoiceKey = key;
+    ensureInstruments(this.score);
+    const existing = this.score.instruments.find((m) => m.type === key);
+    this.focusInstId = existing ? existing.id : null;
+    this.onTouched?.();
+  }
+
+  get focusInstrument() {
+    ensureInstruments(this.score);
+    if (this.focusInstId) {
+      const m = this.score.instruments.find((i) => i.id === this.focusInstId);
+      if (m) return m;
+    }
+    return null;
+  }
+
+  /** Channel used for audition / new lanes from the dock voice. */
+  get dockChannel() {
+    const inst = this.focusInstrument;
+    if (inst) return inst.channel | 0;
+    return this.channel || 1;
+  }
+
+  get dockVoiceLabel() {
+    const inst = this.focusInstrument;
+    if (inst) return instrumentInstanceName(this.score, inst);
+    const def = InstTypes[this.dockVoiceKey] || InstTypes.fm;
+    return def.name + " · new";
+  }
+
+  /**
+   * Ensure an instrument exists for the dock voice; spawn near `near` if needed.
+   * @returns {object|null} instrument module
+   */
+  ensureDockInstrument(near = null) {
+    ensureInstruments(this.score);
+    const focused = this.focusInstrument;
+    if (focused) return focused;
+    const existing = this.score.instruments.find((m) => m.type === this.dockVoiceKey);
+    if (existing) {
+      this.focusInstId = existing.id;
+      return existing;
+    }
+    // Not on canvas yet — create near the drop/note
+    return this.placeInstrument(this.dockVoiceKey, near);
+  }
+
+  /**
+   * Place a new instrument instance on the grid (Kick1, Kick2, …).
+   * @param {string} typeKey
+   * @param {{x:number,y:number}|null} near  preferred spawn anchor
+   * @param {{x:number,y:number}|null} at    exact cell if free
+   */
+  placeInstrument(typeKey, near = null, at = null) {
+    ensureInstruments(this.score);
+    const key = InstrumentKeys.includes(typeKey) ? typeKey : "fm";
+    const def = InstTypes[key] || InstTypes.fm;
+    let cell = null;
+    if (at) {
+      // Exact placement (ground menu / icon drop) — fail if occupied
+      if (!canPlaceInstrumentAt(this.score, at.x, at.y, def.w, def.h)) return null;
+      cell = { x: at.x | 0, y: at.y | 0 };
+    } else {
+      cell = findInstrumentSpawnCell(this.score, near || this.getCursor(), def.w, def.h);
+      if (!canPlaceInstrumentAt(this.score, cell.x, cell.y, def.w, def.h)) return null;
+    }
+    const channel = nextInstrumentChannel(this.score);
+    const mod = createInstrumentModule(key, cell.x, cell.y, { channel });
+    this.score.instruments.push(mod);
+    syncInstrumentPatch(this.project, mod);
+    this.focusInstId = mod.id;
+    this.dockVoiceKey = key;
+    this.clearObjectSelection();
+    this.selectedInstId = mod.id;
+    this.setCursor(gp(mod.x, mod.y));
+    this.commit();
+    return mod;
+  }
+
+  /** Delete currently selected FX / instrument / trigger (no cursor required). */
+  deleteSelection() {
+    ensureFxLists(this.score);
+    ensureInstruments(this.score);
+    if (this.selectedFxId) {
+      removeFxModule(this.score, this.selectedFxId);
+      this.selectedFxId = null;
+      this.commit();
+      return true;
+    }
+    if (this.selectedInstId) {
+      const id = this.selectedInstId;
+      removeInstrument(this.score, id);
+      if (this.focusInstId === id) this.focusInstId = null;
+      this.selectedInstId = null;
+      this.commit();
+      return true;
+    }
+    if (this.selectedAutoId) {
+      this.score.fxTriggers = this.score.fxTriggers.filter(
+        (t) => t.id !== this.selectedAutoId,
+      );
+      this.selectedAutoId = null;
+      this.commit();
+      return true;
+    }
+    return false;
   }
 
   get score() {
@@ -177,20 +330,9 @@ export class ScoreEditor {
 
     // Instrument pedals — many lanes bind by nearest term → left corner
     if (spec.kind === "INST") {
-      ensureInstruments(this.score);
       const type = spec.instType || "fm";
-      const def = InstTypes[type] || InstTypes.fm;
-      if (!canPlaceInstrumentAt(this.score, point.x, point.y, def.w, def.h)) {
-        return false;
-      }
-      const channel = nextInstrumentChannel(this.score);
-      const mod = createInstrumentModule(type, point.x, point.y, { channel });
-      this.score.instruments.push(mod);
-      syncInstrumentPatch(this.project, mod);
-      this.clearObjectSelection();
-      this.selectedInstId = mod.id;
-      this.commit();
-      return true;
+      const mod = this.placeInstrument(type, point, point);
+      return !!mod;
     }
 
     // FX pedals land on free ground (not on lane cells).
@@ -327,6 +469,9 @@ export class ScoreEditor {
   }
 
   deleteAtCursor() {
+    // Prefer explicit selection (badge X / panel) without needing cursor on object
+    if (this.deleteSelection()) return;
+
     ensureFxLists(this.score);
     ensureInstruments(this.score);
     const point = this.getCursor();
@@ -458,16 +603,27 @@ export class ScoreEditor {
 
   /**
    * Empty ground: create a 1-step lane, or lengthen an adjacent lane end.
+   * Ensures the dock instrument exists on the canvas (spawns near the note).
    */
   placeNoteOnGround(point, note) {
     point = this.score.wrap(point);
     if (!this._noteDropGroundOk(point)) return false;
+
+    // Ensure dock voice has a grid instrument (auto-spawn if missing)
+    const inst = this.ensureDockInstrument(point);
+    const ch = inst?.channel ?? this.dockChannel;
+    const label = inst ? instrumentInstanceName(this.score, inst) : "";
 
     const grow = this._findNoteGrowTarget(point);
     if (grow) {
       const { lane, which } = grow;
       lane.ensurePath();
       lane.circular = false;
+      // Keep lane on the dock instrument channel when we know it
+      if (lane.channel && inst) {
+        lane.channel.channel = ch;
+        if (label) lane.channel.label = label;
+      }
       if (which === "end") {
         lane.addStep(point);
         const step = lane.steps.length - 1;
@@ -494,7 +650,7 @@ export class ScoreEditor {
     const lane = this.score.addLane(
       point.x,
       point.y,
-      new ChannelTile(this.channel, 16, ""),
+      new ChannelTile(ch, 16, label),
       1,
     );
     lane.path = [gp(point.x, point.y)];
@@ -509,12 +665,33 @@ export class ScoreEditor {
     return true;
   }
 
-  /** Preview pitch on focus lane channel (via nearest instrument if any). */
+  /** Preview pitch with the dock instrument voice. */
   auditionNote(note) {
-    const lane = this.focusLane || this.selectedLane;
-    const ch = lane
-      ? resolveLaneChannel(this.score, lane)
-      : (this.channel ?? 1);
+    let ch = this.dockChannel;
+    const inst = this.focusInstrument;
+    if (inst) {
+      ch = inst.channel | 0;
+    } else {
+      ensureInstruments(this.score);
+      const existing = this.score.instruments.find((m) => m.type === this.dockVoiceKey);
+      if (existing) {
+        ch = existing.channel | 0;
+      } else {
+        // Spare bank slot only — never overwrite a channel owned by another inst
+        const used = new Set(this.score.instruments.map((m) => m.channel | 0));
+        let trial = 0;
+        for (let c = 1; c <= PatchBank.Channels; c++) {
+          if (!used.has(c)) {
+            trial = c;
+            break;
+          }
+        }
+        if (trial) {
+          Object.assign(PatchBank.get(this.project.patches, trial), patchFor(this.dockVoiceKey));
+          ch = trial;
+        }
+      }
+    }
     this.preview(note, ch);
     this._notePitch = note;
   }

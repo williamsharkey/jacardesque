@@ -71,6 +71,62 @@ export function createInstrumentModule(type, x, y, {
   };
 }
 
+/** "Kick1", "Kick2" — 1-based among same type in placement order. */
+export function instrumentInstanceName(score, inst) {
+  ensureInstruments(score);
+  if (!inst) return "?";
+  const base = InstTypes[inst.type]?.name || inst.type || "Inst";
+  const same = score.instruments.filter((m) => m.type === inst.type);
+  const idx = Math.max(0, same.findIndex((m) => m.id === inst.id)) + 1;
+  return base + idx;
+}
+
+/** Compact label for dock icons / grip: K1, K2, HH, … */
+export function instrumentShortLabel(score, inst) {
+  ensureInstruments(score);
+  if (!inst) return "?";
+  const def = InstTypes[inst.type] || InstTypes.fm;
+  const same = score.instruments.filter((m) => m.type === inst.type);
+  const idx = Math.max(0, same.findIndex((m) => m.id === inst.id)) + 1;
+  if (same.length <= 1) return def.label;
+  return def.label.slice(0, 2) + idx;
+}
+
+/**
+ * Find a free cell near `near` for a new instrument footprint.
+ * Prefers below-right of the note/term so underlight paths stay short.
+ */
+export function findInstrumentSpawnCell(score, near, w = 3, h = 4) {
+  ensureInstruments(score);
+  const gw = score.gridW || 32;
+  const gh = score.gridH || 16;
+  const ox = near?.x ?? 1;
+  const oy = near?.y ?? 1;
+  const offsets = [];
+  for (let r = 1; r <= 8; r++) {
+    for (let dy = 0; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.abs(dx) + dy !== r && !(dx === 0 && dy === 0)) continue;
+        offsets.push({ dx, dy: dy + 1 }); // bias downward
+        if (dy > 0) offsets.push({ dx, dy: -dy });
+      }
+    }
+  }
+  offsets.unshift({ dx: 1, dy: 1 }, { dx: 0, dy: 2 }, { dx: 2, dy: 0 });
+  for (const { dx, dy } of offsets) {
+    const x = ((ox + dx) % gw + gw) % gw;
+    const y = ((oy + dy) % gh + gh) % gh;
+    if (canPlaceInstrumentAt(score, x, y, w, h)) return { x, y };
+  }
+  // Fallback: scan
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      if (canPlaceInstrumentAt(score, x, y, w, h)) return { x, y };
+    }
+  }
+  return { x: ox, y: oy };
+}
+
 export function instOccupies(mod, point) {
   return fxOccupies(mod, point);
 }

@@ -51,6 +51,8 @@ Prefer notes from the **bottom keyboard**:
 - Drag a key onto a **lane step** → place/replace note there.
 - Drag onto **empty ground** → create a **length-1** lane with that note.
 - Drag onto a cell **N / E / S / W** of an existing lane end (or onto its term/head marker) → **lengthen** that lane by one step and place the note.
+- **Instrument icons** beside the ‹ voice › cycler select Kick / Hat / … even before one exists on the plane; drag an icon onto the grid to place it (drop twice → **Kick1**, **Kick2**). Placing a note with a missing voice **auto-spawns** that instrument near the note.
+- Selected FX / instruments / triggers show a red **✕** badge (top-right) — click to delete without using the side panel.
 
 ---
 
