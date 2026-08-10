@@ -512,15 +512,56 @@ export class ProbGateTile {
   }
 }
 
+/**
+ * Shorten a channel label for the 30px grid cell.
+ * Kick1 → K1, HiHat → HH, BassDrum → BD, Lead → Ld
+ */
+export function abbreviateName(name, maxLetters = 2) {
+  if (!name || !String(name).trim()) return "";
+  const raw = String(name).trim();
+  const m = raw.match(/^(.*?)(\d*)$/);
+  const base = (m[1] || raw).replace(/[_\-]+/g, " ");
+  const digits = m[2] || "";
+  const parts = base
+    .split(/\s+|(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
+    .map((p) => p.replace(/[^a-zA-Z]/g, ""))
+    .filter(Boolean);
+  let letters;
+  if (parts.length >= 2) {
+    letters = parts.map((p) => p[0]).join("");
+  } else if (parts.length === 1) {
+    const w = parts[0];
+    // Single word + digits → first letter only (Kick1 → K1); else first two (Bass → Ba)
+    letters = digits ? w[0] : w.slice(0, Math.min(2, w.length));
+  } else {
+    letters = raw.slice(0, 2);
+  }
+  letters = letters.toUpperCase().slice(0, maxLetters);
+  const out = letters + digits;
+  return out.slice(0, 4);
+}
+
 export class ChannelTile {
   static Divisions = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
 
-  constructor(channel = 1, division = 16) {
+  constructor(channel = 1, division = 16, label = "") {
     this.kind = "chan";
     this._channel = 1;
     this._division = 16;
+    this.label = label || "";
     this.channel = channel;
     this.division = division;
+  }
+
+  /** Full display name; falls back to CH{n}. */
+  get displayName() {
+    return (this.label && this.label.trim()) || ("CH" + this._channel);
+  }
+
+  /** Grid cell abbreviation. */
+  get shortName() {
+    if (this.label && this.label.trim()) return abbreviateName(this.label);
+    return "CH" + this._channel;
   }
 
   get channel() {
@@ -548,7 +589,7 @@ export class ChannelTile {
   }
 
   get token() {
-    return "CHAN:" + this._channel;
+    return this.shortName;
   }
 }
 
@@ -1138,6 +1179,9 @@ function writeLane(lines, score, lane) {
   let head;
   if (lane.channel) {
     head = "CHAN:" + lane.channel.channel + " div=" + lane.channel.division;
+    if (lane.channel.label) {
+      head += " name=" + encodeLaneName(lane.channel.label);
+    }
   } else {
     head = "JDST";
     if (lane.jumpSource) {
@@ -1340,9 +1384,18 @@ function readLane(score, tokens, number, links) {
   for (let i = 4; i < tokens.length; i++) {
     const [key, value] = split(tokens[i]);
     if (key === "div" && tile instanceof ChannelTile) tile.division = readInt(value);
+    else if (key === "name" && tile instanceof ChannelTile) tile.label = decodeLaneName(value);
     else if (key === "from") links.push({ branch: lane, point: readPoint(value, number) });
   }
   return lane;
+}
+
+function encodeLaneName(name) {
+  return String(name).trim().replace(/\s+/g, "_");
+}
+
+function decodeLaneName(value) {
+  return String(value || "").replace(/_/g, " ");
 }
 
 function readStep(step, tokens, number) {

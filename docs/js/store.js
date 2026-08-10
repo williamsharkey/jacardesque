@@ -4,10 +4,10 @@ import { Project, ProjectFormat } from "./core.js";
 import { FACTORY_SKETCHES, buildFactorySketch } from "./examples.js";
 import { FX_FACTORY_SKETCHES } from "./examples-fx.js";
 
-const PREFIX = "jacquardesque:v3:score:";
-const INDEX_KEY = "jacquardesque:v3:index";
-const CURRENT_KEY = "jacquardesque:v3:current";
-const SEEDED_KEY = "jacquardesque:v3:seeded";
+const PREFIX = "jacquardesque:v4:score:";
+const INDEX_KEY = "jacquardesque:v4:index";
+const CURRENT_KEY = "jacquardesque:v4:current";
+const SEEDED_KEY = "jacquardesque:v4:seeded";
 
 const ALL_FACTORY = [...FACTORY_SKETCHES, ...FX_FACTORY_SKETCHES];
 

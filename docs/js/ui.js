@@ -1206,10 +1206,12 @@ function drawTileContent(ctx, tile, r) {
   }
   if (tile instanceof ChannelTile) {
     ctx.fillStyle = Style.NoteText;
-    ctx.font = "600 11px system-ui,sans-serif";
+    const abbr = tile.shortName || ("CH" + tile.channel);
+    const size = abbr.length > 3 ? 9 : abbr.length > 2 ? 10 : 11;
+    ctx.font = "600 " + size + "px system-ui,sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("CH" + tile.channel, r.x + r.w / 2, r.y + r.h / 2);
+    ctx.fillText(abbr, r.x + r.w / 2, r.y + r.h / 2);
     return;
   }
   if (tile instanceof CycleGateTile) {
@@ -1454,6 +1456,95 @@ const PitchRange = makeRange({
 const LengthRange = makeRange({
   low: 0.25, high: 8, snap: 0.25, digits: 2, unit: "steps",
 });
+
+/** 3-octave piano + octave −/+ + pitch slider for note tiles. */
+function createPitchEditor(tile, editor, onPaint) {
+  const root = el("div", "pitch-editor");
+
+  const setNote = (n, preview = true) => {
+    tile.note = Math.round(Math.min(Pitch.Highest, Math.max(Pitch.Lowest, n)));
+    editor.rememberNote(tile);
+    editor.touch();
+    paintKeys();
+    bar.sync();
+    onPaint?.();
+    if (preview) editor.preview(tile.note);
+  };
+
+  const head = el("div", "pitch-head");
+  const octDown = button("oct −", () => setNote(tile.note - 12), 48);
+  const read = el("div", "pitch-readout");
+  const octUp = button("oct +", () => setNote(tile.note + 12), 48);
+  head.append(octDown, read, octUp);
+  root.append(head);
+
+  const kb = el("div", "piano");
+  root.append(kb);
+
+  function paintKeys() {
+    read.textContent = Pitch.toName(tile.note);
+    // Three octaves: C of (noteOct − 1) through almost C of (noteOct + 2)
+    const noteOct = Pitch.toOctave(tile.note);
+    let start = (noteOct - 1 + 1) * 12;
+    if (start < 24) start = 24;
+    if (start + 35 > 108) start = 108 - 35;
+    kb.innerHTML = "";
+    const whites = el("div", "piano-whites");
+    const blacks = el("div", "piano-blacks");
+    const keys = [];
+    for (let i = 0; i < 36; i++) keys.push(start + i);
+    const whiteNotes = keys.filter((n) => !Pitch.isSharp(n));
+    whiteNotes.forEach((n) => {
+      const key = el("button", "piano-key white" + (n === tile.note ? " active" : ""));
+      key.type = "button";
+      key.title = Pitch.toName(n);
+      key.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setNote(n);
+      });
+      whites.appendChild(key);
+    });
+    keys.filter((n) => Pitch.isSharp(n)).forEach((n) => {
+      const key = el("button", "piano-key black" + (n === tile.note ? " active" : ""));
+      key.type = "button";
+      key.title = Pitch.toName(n);
+      const whitesLeft = whiteNotes.filter((w) => w < n).length;
+      key.style.left = `calc(${(whitesLeft / Math.max(1, whiteNotes.length)) * 100}% - 5px)`;
+      key.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setNote(n);
+      });
+      blacks.appendChild(key);
+    });
+    kb.append(whites, blacks);
+  }
+
+  const bar = createValueBar(
+    PitchRange,
+    () => tile.note,
+    (v) => {
+      tile.note = Math.round(Math.min(Pitch.Highest, Math.max(Pitch.Lowest, v)));
+      editor.rememberNote(tile);
+      editor.touch();
+      paintKeys();
+      onPaint?.();
+    },
+    () => editor.preview(tile.note),
+  );
+  const barWrap = el("div", "control-row");
+  barWrap.append(el("div", "control-label", "Pitch"));
+  barWrap.append(bar);
+  root.append(barWrap);
+
+  paintKeys();
+  root.sync = () => {
+    paintKeys();
+    bar.sync();
+  };
+  return root;
+}
 const PeriodRange = makeRange({ low: 2, high: 8, snap: 1, digits: 0 });
 const FiresOnRange = makeRange({ low: 1, high: 8, snap: 1, digits: 0 });
 const PercentRange = makeRange({ low: 0, high: 100, snap: 1, digits: 0, unit: "%" });
@@ -1671,14 +1762,7 @@ export class JacquardUI {
 
     body.append(el("div", "divider"));
     if (tile instanceof NoteTile) {
-      body.append(barRow("Pitch", PitchRange,
-        () => tile.note,
-        (v) => {
-          tile.note = Math.round(Math.min(Pitch.Highest, Math.max(Pitch.Lowest, v)));
-          this.editor.rememberNote(tile);
-          this.editor.touch();
-        },
-        () => this.editor.preview(tile.note)));
+      body.append(createPitchEditor(tile, this.editor, () => this.view.paint()));
       body.append(barRow("Length", LengthRange,
         () => tile.length,
         (v) => {
@@ -1707,6 +1791,25 @@ export class JacquardUI {
           this.editor.touch();
         }));
     } else if (tile instanceof ChannelTile) {
+      body.append(el("div", "caption", "Name on grid: " + tile.shortName));
+      const nameRow = el("div", "control-row");
+      nameRow.append(el("div", "control-label", "Name"));
+      const nameInput = el("input", "name-input");
+      nameInput.type = "text";
+      nameInput.placeholder = "e.g. Kick1";
+      nameInput.value = tile.label || "";
+      nameInput.addEventListener("input", () => {
+        tile.label = nameInput.value;
+        this.editor.touch();
+        this.view.paint();
+      });
+      nameInput.addEventListener("change", () => {
+        this.editor.commit();
+        this.buildTilePanel();
+      });
+      nameInput.addEventListener("keydown", (e) => e.stopPropagation());
+      nameRow.append(nameInput);
+      body.append(nameRow);
       body.append(barRow("Channel", ChannelRange,
         () => tile.channel,
         (v) => {
@@ -1929,7 +2032,10 @@ function describe(tile) {
   }
   if (tile instanceof CycleGateTile) return "GCYC  cycle gate";
   if (tile instanceof ProbGateTile) return "GPRB  probability gate";
-  if (tile instanceof ChannelTile) return "CHAN  channel start";
+  if (tile instanceof ChannelTile) {
+    return "CHAN  " + tile.displayName +
+      (tile.label ? "  (" + tile.shortName + ")" : "");
+  }
   if (tile instanceof TerminatorTile) return "TERM  lane end";
   if (tile instanceof JumpTile) return "JUMP  branch out";
   if (tile instanceof JumpDestTile) return "JDST  branch target";

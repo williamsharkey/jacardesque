@@ -23,6 +23,10 @@ function N(name) {
   return Pitch.tryParse(name) ?? 60;
 }
 
+function ch(num, div, label) {
+  return new ChannelTile(num, div, label);
+}
+
 function fill(lane, step, ...tiles) {
   lane.steps[step].tiles.push(...tiles);
 }
@@ -56,7 +60,7 @@ function echoHallway() {
     tempo: 100,
   });
   setPatch(p, 1, "pluck", { level: 0.45 });
-  const lane = p.score.addLane(1, 2, new ChannelTile(1, 16), 16);
+  const lane = p.score.addLane(1, 2, ch(1, 16, "Pluck"), 16);
   const melody = ["C4", "E4", "G4", "A4", "G4", "E4", "D4", "C4", "E4", "G4", "C5", "B4", "A4", "G4", "E4", "C4"];
   melody.forEach((n, i) => fill(lane, i, new NoteTile(N(n), 0.8)));
   const dly = addPedal(p, "delay", 10, 5, { mix: 0.45, time: 0.38, feedback: 0.4, tone: 0.35 });
@@ -81,10 +85,10 @@ function tapeBloom() {
   });
   setPatch(p, 1, "kick");
   setPatch(p, 2, "bass", { level: 0.5 });
-  const kick = p.score.addLane(1, 1, new ChannelTile(1, 8), 8);
+  const kick = p.score.addLane(1, 1, ch(1, 8, "Kick"), 8);
   fill(kick, 0, new NoteTile(N("C2")));
   fill(kick, 4, new NoteTile(N("C2")));
-  const bass = p.score.addLane(1, 3, new ChannelTile(2, 8), 8);
+  const bass = p.score.addLane(1, 3, ch(2, 8, "Bass"), 8);
   fill(bass, 0, new NoteTile(N("C2"), 3));
   fill(bass, 4, new NoteTile(N("G1"), 3));
   const dly = addPedal(p, "delay", 12, 1, { mix: 0.4, time: 0.5, feedback: 0.45 });
@@ -104,7 +108,7 @@ function distortedDusk() {
     tempo: 88,
   });
   setPatch(p, 1, "pad", { level: 0.35 });
-  const pad = p.score.addLane(1, 2, new ChannelTile(1, 4), 8);
+  const pad = p.score.addLane(1, 2, ch(1, 4, "Pad"), 8);
   fill(pad, 0, new NoteTile(N("D3"), 4), new NoteTile(N("A3"), 4));
   fill(pad, 4, new NoteTile(N("F3"), 4), new NoteTile(N("C4"), 4));
   const flt = addPedal(p, "filter", 12, 2, { mix: 1, cutoff: 0.25, reso: 0.35 });
@@ -133,7 +137,7 @@ function sidewalkRadio() {
     tempo: 120,
   });
   setPatch(p, 1, "fm", { level: 0.4, modulationIndex: 1.6 });
-  const lead = p.score.addLane(1, 2, new ChannelTile(1, 16), 16);
+  const lead = p.score.addLane(1, 2, ch(1, 16, "Lead"), 16);
   ["A4", "C5", "E5", "A4", "G4", "E4", "C5", "B4"].forEach((n, i) => {
     fill(lead, i * 2, new NoteTile(N(n), 0.7));
   });
@@ -161,7 +165,7 @@ function glassDelay() {
     tempo: 92,
   });
   setPatch(p, 1, "bell", { level: 0.4 });
-  const bells = p.score.addLane(1, 2, new ChannelTile(1, 8), 8);
+  const bells = p.score.addLane(1, 2, ch(1, 8, "Bells"), 8);
   fill(bells, 0, new NoteTile(N("E5"), 2));
   fill(bells, 3, new NoteTile(N("B4"), 1));
   fill(bells, 5, new NoteTile(N("G#5"), 2));
@@ -184,9 +188,9 @@ function pedalboardHymn() {
   });
   setPatch(p, 1, "pad", { level: 0.32 });
   setPatch(p, 2, "pluck", { level: 0.35 });
-  const pad = p.score.addLane(1, 1, new ChannelTile(1, 4), 4);
+  const pad = p.score.addLane(1, 1, ch(1, 4, "Pad"), 4);
   fill(pad, 0, new NoteTile(N("G3"), 4), new NoteTile(N("D4"), 4));
-  const pluck = p.score.addLane(1, 4, new ChannelTile(2, 8), 8);
+  const pluck = p.score.addLane(1, 4, ch(2, 8, "Pluck"), 8);
   fill(pluck, 2, new NoteTile(N("B4"), 1));
   fill(pluck, 6, new NoteTile(N("D5"), 1));
   const dst = addPedal(p, "distort", 12, 1, { mix: 0.2, drive: 0.25 });
@@ -213,11 +217,11 @@ function metricMirror() {
   setPatch(p, 1, "kick");
   setPatch(p, 2, "hat");
   setPatch(p, 3, "pluck", { level: 0.4 });
-  const kick = p.score.addLane(1, 1, new ChannelTile(1, 16), 16);
+  const kick = p.score.addLane(1, 1, ch(1, 16, "Kick"), 16);
   for (let i = 0; i < 16; i += 4) fill(kick, i, new NoteTile(N("C2")));
-  const hat = p.score.addLane(1, 3, new ChannelTile(2, 16), 16);
+  const hat = p.score.addLane(1, 3, ch(2, 16, "Hats"), 16);
   for (let i = 0; i < 16; i += 2) fill(hat, i, new NoteTile(N("F#5"), 0.2));
-  const pl = p.score.addLane(1, 5, new ChannelTile(3, 16), 16);
+  const pl = p.score.addLane(1, 5, ch(3, 16, "Pluck"), 16);
   fill(pl, 0, new NoteTile(N("E4"), 1));
   fill(pl, 4, new NoteTile(N("G4"), 1));
   fill(pl, 8, new NoteTile(N("A4"), 1));
@@ -243,7 +247,7 @@ function whisperGate() {
     tempo: 104,
   });
   setPatch(p, 1, "fm", { level: 0.42 });
-  const lane = p.score.addLane(1, 2, new ChannelTile(1, 16), 16);
+  const lane = p.score.addLane(1, 2, ch(1, 16, "Voice"), 16);
   for (let i = 0; i < 16; i++) {
     if (i % 4 === 0) fill(lane, i, new NoteTile(N("C4"), 1));
     else if (i % 4 === 2) {
@@ -276,11 +280,11 @@ function brokenSpeaker() {
   });
   setPatch(p, 1, "bass", { level: 0.55 });
   setPatch(p, 2, "snare", { level: 0.4 });
-  const bass = p.score.addLane(1, 2, new ChannelTile(1, 8), 8);
+  const bass = p.score.addLane(1, 2, ch(1, 8, "Bass"), 8);
   fill(bass, 0, new NoteTile(N("E2"), 2));
   fill(bass, 3, new NoteTile(N("G2"), 1));
   fill(bass, 5, new NoteTile(N("A2"), 2));
-  const sn = p.score.addLane(1, 4, new ChannelTile(2, 8), 8);
+  const sn = p.score.addLane(1, 4, ch(2, 8, "Snare"), 8);
   fill(sn, 2, new NoteTile(N("D3")));
   fill(sn, 6, new NoteTile(N("D3")));
   const dst = addPedal(p, "distort", 12, 2, { mix: 0.25, drive: 0.2 });
@@ -304,9 +308,9 @@ function echoplexGarden() {
   });
   setPatch(p, 1, "pluck", { level: 0.4 });
   setPatch(p, 2, "bell", { level: 0.28 });
-  const pl = p.score.addLane(1, 2, new ChannelTile(1, 12), 12);
+  const pl = p.score.addLane(1, 2, ch(1, 12, "Pluck"), 12);
   ["D4", "F4", "A4", "C5", "A4", "F4"].forEach((n, i) => fill(pl, i * 2, new NoteTile(N(n), 1.2)));
-  const bl = p.score.addLane(1, 5, new ChannelTile(2, 8), 8);
+  const bl = p.score.addLane(1, 5, ch(2, 8, "Bells"), 8);
   fill(bl, 1, new ProbGateTile(60), new NoteTile(N("D5"), 0.5));
   fill(bl, 5, new NoteTile(N("A5"), 0.5));
   const d1 = addPedal(p, "delay", 10, 7, { mix: 0.35, time: 0.7, feedback: 0.45, tone: 0.5 });
