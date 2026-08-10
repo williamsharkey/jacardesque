@@ -131,6 +131,20 @@ export class AudioEngine {
     this._lastGraphKey = key;
     this.node.port.postMessage({ type: "fxgraph", graph });
   }
+
+  /** Compact master bus: userGain, auto-attenuate, limiter. */
+  setMaster(master) {
+    if (!this.node || !master) return;
+    const key = JSON.stringify(master);
+    if (key === this._lastMasterKey) return;
+    this._lastMasterKey = key;
+    this.node.port.postMessage({
+      type: "master",
+      userGain: master.userGain,
+      autoAtten: master.autoAtten,
+      limiter: master.limiter,
+    });
+  }
 }
 
 function fxEqual(a, b) {

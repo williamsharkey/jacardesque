@@ -774,6 +774,75 @@ button.lock-label:hover {
   padding-bottom: 90px;
 }
 
+/* Compact master bus — bottom-right corner, always visible */
+.master-bar {
+  position: absolute;
+  right: 10px;
+  bottom: 88px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  font-size: 10px;
+  color: var(--label);
+  user-select: none;
+}
+
+.master-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  cursor: default;
+}
+
+.master-knob-lab {
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+}
+
+.master-knob input[type="range"] {
+  width: 56px;
+  height: 14px;
+  margin: 0;
+  accent-color: #38bdf8;
+}
+
+.master-check {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #d4d4d8;
+}
+
+.master-check input {
+  margin: 0;
+  accent-color: #34d399;
+}
+
+@media (max-width: 720px) {
+  .master-bar {
+    bottom: 100px;
+    right: 6px;
+    gap: 5px;
+    padding: 4px 6px;
+  }
+  .master-knob input[type="range"] {
+    width: 44px;
+  }
+}
+
 @media (max-width: 720px) {
   .panel {
     width: 180px;

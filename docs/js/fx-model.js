@@ -40,8 +40,9 @@ export const FxTypes = {
     w: 3,
     h: 3,
     params: [
-      { key: "mix", label: "Mix", min: 0, max: 1, def: 0.4 },
-      { key: "drive", label: "Drive", min: 0, max: 1, def: 0.45 },
+      // Defaults ~half of prior (0.4/0.45) — those were routinely unusable
+      { key: "mix", label: "Mix", min: 0, max: 1, def: 0.18 },
+      { key: "drive", label: "Drive", min: 0, max: 1, def: 0.22 },
     ],
   },
   filter: {

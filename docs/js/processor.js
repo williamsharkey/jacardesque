@@ -357,7 +357,7 @@ class VoicePool {
       const target = panGains(note);
       voice.tGl = target.left;
       voice.tGr = target.right;
-      const ch = Math.min(8, Math.max(1, note.channel | 1)) - 1;
+      const ch = Math.min(32, Math.max(1, note.channel | 1)) - 1;
       for (let frame = 0; frame < frameCount; frame++) {
         const time = (bufferStart + frame - note.startSample) * dt;
         if (time < 0) continue;
@@ -1074,7 +1074,12 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this.gridFx = new GridFxGraph(sampleRate);
     this.dspSample = 0;
     // Headroom: dense chords + sends used to slam the soft clip ("rinky dink").
-    this.masterGain = 0.42;
+    this.masterGain = 0.42; // legacy scalar (overridden by setMaster)
+    this.userGain = 0.85;
+    this.autoAttenOn = true;
+    this.limiterOn = true;
+    // Auto-attenuator envelope (multiplies user gain when peaks are hot)
+    this.autoAttenGain = 1;
     this.fx = {
       reverbSize: 0.5,
       reverbDamp: 0.5,
@@ -1115,7 +1120,7 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this._delayIn = new Float32Array(frameCount);
     this._wetL = new Float32Array(frameCount);
     this._wetR = new Float32Array(frameCount);
-    this._chMono = Array.from({ length: 8 }, () => new Float32Array(frameCount));
+    this._chMono = Array.from({ length: 32 }, () => new Float32Array(frameCount));
   }
 
   onMessage(msg) {
@@ -1130,6 +1135,11 @@ class JacquardProcessor extends AudioWorkletProcessor {
       this.gridFx.setGraph(msg.graph);
     } else if (msg.type === "gain") {
       this.masterGain = msg.gain;
+    } else if (msg.type === "master") {
+      if (msg.userGain != null) this.userGain = Math.max(0, Math.min(1.5, +msg.userGain));
+      if (msg.autoAtten != null) this.autoAttenOn = !!msg.autoAtten;
+      if (msg.limiter != null) this.limiterOn = !!msg.limiter;
+      if (!this.autoAttenOn) this.autoAttenGain = 1;
     }
   }
 
@@ -1175,9 +1185,44 @@ class JacquardProcessor extends AudioWorkletProcessor {
       );
     }
 
+    // Master bus: user gain → optional auto-atten (−1 dBFS target) → soft limit
+    const thresh = 0.89125; // 10^(-1/20) ≈ −1 dBFS
+    const limCeil = 0.98;
+    const ug = this.userGain * this.masterGain; // masterGain = fixed headroom
+    const atk = 1 - Math.exp(-1 / (0.05 * this.sampleRate));
+    const rel = 1 - Math.exp(-1 / (0.8 * this.sampleRate));
+
     for (let i = 0; i < frameCount; i++) {
-      outL[i] = softClip((dryL[i] + wetL[i]) * this.masterGain);
-      outR[i] = softClip((dryR[i] + wetR[i]) * this.masterGain);
+      const dryWetL = dryL[i] + wetL[i];
+      const dryWetR = dryR[i] + wetR[i];
+      // Peak at full user gain (before auto atten) — decide how much to pull down
+      const rawPeak = Math.max(Math.abs(dryWetL), Math.abs(dryWetR)) * ug;
+      if (this.autoAttenOn) {
+        const target = rawPeak > thresh
+          ? Math.max(0.05, thresh / rawPeak)
+          : 1;
+        if (target < this.autoAttenGain) {
+          this.autoAttenGain += (target - this.autoAttenGain) * atk;
+        } else {
+          this.autoAttenGain += (1 - this.autoAttenGain) * rel;
+        }
+      } else {
+        this.autoAttenGain = 1;
+      }
+
+      let l = dryWetL * ug * this.autoAttenGain;
+      let r = dryWetR * ug * this.autoAttenGain;
+
+      if (this.limiterOn) {
+        const p2 = Math.max(Math.abs(l), Math.abs(r));
+        if (p2 > limCeil) {
+          const s = limCeil / p2;
+          l *= s;
+          r *= s;
+        }
+      }
+      outL[i] = softClip(l);
+      outR[i] = softClip(r);
     }
 
     this.dspSample += frameCount;

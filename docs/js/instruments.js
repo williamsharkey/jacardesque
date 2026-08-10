@@ -1,9 +1,10 @@
-// Named instrument presets for the multi-timbre worklet.
-// Apache-2.0 / MIT research path: SpessaSynth (SF2), smplr (MIT GM banks),
-// FluidSynth-WASM — we ship a self-contained multi-algorithm worklet so GitHub
-// Pages stays offline-first with no multi‑MB SoundFont download. SF2 remains
-// an optional upgrade path (see README).
+// Named instrument catalog — 30 presets over 8 synthesis engines.
+// patch.instrument = engine id 0–7 (what the worklet renders).
+// UI selection uses catalog keys (kick-deep, pad-warm, …).
 
+import catalog from "./instrument-catalog.json" with { type: "json" };
+
+/** Engine algorithms (processor switch). */
 export const Instruments = {
   fm: 0,
   kick: 1,
@@ -15,160 +16,99 @@ export const Instruments = {
   pluck: 7,
 };
 
-export const InstrumentNames = [
+export const EngineNames = [
   "FM", "Kick", "Snare", "Hat", "Bass", "Pad", "Bell", "Pluck",
 ];
 
-export const InstrumentKeys = [
-  "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
-];
+/** Full catalog of 30 named presets (agent-designed + level-tuned). */
+export const InstrumentCatalog = catalog.map((p, i) => ({
+  ...p,
+  index: i,
+  engine: Math.min(7, Math.max(0, p.engine | 0)),
+}));
+
+export const InstrumentKeys = InstrumentCatalog.map((p) => p.key);
+export const InstrumentNames = InstrumentCatalog.map((p) => p.name);
+
+/** Legacy short keys → catalog key (for old sketches / dock). */
+const LEGACY_ALIAS = {
+  fm: "fm-lead",
+  kick: "kick-punch",
+  snare: "snare-crisp",
+  hat: "hat-closed",
+  bass: "bass-sub",
+  pad: "pad-warm",
+  bell: "bell-chime",
+  pluck: "pluck-nylon",
+};
 
 export function parseInstrument(key) {
   if (key == null || key === "") return 0;
-  if (typeof key === "number") return Math.min(7, Math.max(0, key | 0));
-  const i = InstrumentKeys.indexOf(String(key).toLowerCase());
-  return i < 0 ? 0 : i;
-}
-
-export function instrumentKey(id) {
-  return InstrumentKeys[id] || "fm";
-}
-
-// Sensible default patches per instrument — used by example sketches.
-export function patchFor(instrument, overrides = {}) {
-  const base = {
-    instrument: parseInstrument(instrument),
-    level: 0.55,
-    pan: 0,
-    gateScale: 1,
-    modulatorRatio: 2,
-    modulationIndex: 1.2,
-    feedback: 0.15,
-    modulatorDecay: 0.18,
-    carrierAttack: 0.004,
-    carrierRelease: 0.18,
-    pitchSweep: 0,
-    pitchDecay: 0.05,
-    reverbSend: 0.12,
-    delaySend: 0.05,
-  };
-
-  switch (base.instrument) {
-    case Instruments.kick:
-      Object.assign(base, {
-        level: 0.7,
-        modulatorRatio: 0.5,
-        modulationIndex: 0.4,
-        feedback: 0,
-        modulatorDecay: 0.04,
-        carrierAttack: 0.001,
-        carrierRelease: 0.22,
-        pitchSweep: -3.5,
-        pitchDecay: 0.045,
-        reverbSend: 0.08,
-        delaySend: 0,
-        gateScale: 0.7,
-      });
-      break;
-    case Instruments.snare:
-      Object.assign(base, {
-        level: 0.5,
-        modulatorRatio: 1.5,
-        modulationIndex: 0.8,
-        feedback: 0.1,
-        modulatorDecay: 0.05,
-        carrierAttack: 0.001,
-        carrierRelease: 0.16,
-        pitchSweep: -0.4,
-        pitchDecay: 0.03,
-        reverbSend: 0.18,
-        delaySend: 0.04,
-        gateScale: 0.55,
-      });
-      break;
-    case Instruments.hat:
-      Object.assign(base, {
-        level: 0.28,
-        modulatorRatio: 7.3,
-        modulationIndex: 2.5,
-        feedback: 1.2,
-        modulatorDecay: 0.03,
-        carrierAttack: 0.001,
-        carrierRelease: 0.06,
-        pitchSweep: 0,
-        pitchDecay: 0.01,
-        reverbSend: 0.1,
-        delaySend: 0.02,
-        gateScale: 0.35,
-      });
-      break;
-    case Instruments.bass:
-      Object.assign(base, {
-        level: 0.6,
-        modulatorRatio: 1,
-        modulationIndex: 0.9,
-        feedback: 0.35,
-        modulatorDecay: 0.25,
-        carrierAttack: 0.006,
-        carrierRelease: 0.2,
-        reverbSend: 0.06,
-        delaySend: 0.08,
-      });
-      break;
-    case Instruments.pad:
-      Object.assign(base, {
-        level: 0.35,
-        modulatorRatio: 1.99,
-        modulationIndex: 1.4,
-        feedback: 0.05,
-        modulatorDecay: 0.8,
-        carrierAttack: 0.12,
-        carrierRelease: 0.9,
-        reverbSend: 0.45,
-        delaySend: 0.2,
-        gateScale: 1.4,
-      });
-      break;
-    case Instruments.bell:
-      Object.assign(base, {
-        level: 0.4,
-        modulatorRatio: 3.5,
-        modulationIndex: 2.8,
-        feedback: 0,
-        modulatorDecay: 0.55,
-        carrierAttack: 0.002,
-        carrierRelease: 1.2,
-        reverbSend: 0.35,
-        delaySend: 0.12,
-      });
-      break;
-    case Instruments.pluck:
-      Object.assign(base, {
-        level: 0.45,
-        modulatorRatio: 2,
-        modulationIndex: 1.6,
-        feedback: 0.4,
-        modulatorDecay: 0.08,
-        carrierAttack: 0.001,
-        carrierRelease: 0.28,
-        reverbSend: 0.15,
-        delaySend: 0.1,
-        gateScale: 0.7,
-      });
-      break;
-    default: // fm lead
-      Object.assign(base, {
-        level: 0.45,
-        modulatorRatio: 2,
-        modulationIndex: 1.5,
-        feedback: 0.2,
-        modulatorDecay: 0.14,
-        carrierAttack: 0.005,
-        carrierRelease: 0.16,
-        reverbSend: 0.15,
-        delaySend: 0.08,
-      });
+  if (typeof key === "number") {
+    // Treat as engine id for legacy patches
+    return Math.min(7, Math.max(0, key | 0));
   }
+  const s = String(key).toLowerCase();
+  const aliased = LEGACY_ALIAS[s] || s;
+  const entry = InstrumentCatalog.find((p) => p.key === aliased);
+  if (entry) return entry.engine;
+  const eng = Instruments[s];
+  return eng != null ? eng : 0;
+}
 
-  return Object.assign(base, overrides);
+/** Catalog entry for a UI key (or engine fallback). */
+export function catalogEntry(keyOrEngine) {
+  if (typeof keyOrEngine === "number") {
+    return InstrumentCatalog.find((p) => p.engine === keyOrEngine) || InstrumentCatalog[0];
+  }
+  const s = String(keyOrEngine || "").toLowerCase();
+  const aliased = LEGACY_ALIAS[s] || s;
+  return InstrumentCatalog.find((p) => p.key === aliased) ||
+    InstrumentCatalog.find((p) => p.engine === Instruments[s]) ||
+    InstrumentCatalog[0];
+}
+
+export function instrumentKey(idOrKey) {
+  if (typeof idOrKey === "string") {
+    const e = catalogEntry(idOrKey);
+    return e.key;
+  }
+  // engine id → first catalog entry of that engine
+  const e = InstrumentCatalog.find((p) => p.engine === (idOrKey | 0));
+  return e?.key || "fm-lead";
+}
+
+/**
+ * Build a patch from catalog key or engine.
+ * Sets instrument = engine id for the worklet.
+ */
+export function patchFor(instrument, overrides = {}) {
+  const entry = catalogEntry(instrument);
+  const base = {
+    instrument: entry.engine,
+    level: entry.level ?? 0.35,
+    pan: 0,
+    gateScale: entry.gateScale ?? 1,
+    modulatorRatio: entry.modulatorRatio ?? 2,
+    modulationIndex: entry.modulationIndex ?? 1,
+    feedback: entry.feedback ?? 0.1,
+    modulatorDecay: entry.modulatorDecay ?? 0.18,
+    carrierAttack: entry.carrierAttack ?? 0.004,
+    carrierRelease: entry.carrierRelease ?? 0.18,
+    pitchSweep: entry.pitchSweep ?? 0,
+    pitchDecay: entry.pitchDecay ?? 0.05,
+    reverbSend: entry.reverbSend ?? 0.1,
+    delaySend: entry.delaySend ?? 0.04,
+    /** UI catalog key (not sent to worklet as engine, stored for recall) */
+    catalogKey: entry.key,
+  };
+  return Object.assign(base, overrides, { instrument: entry.engine });
+}
+
+export function catalogByCategory() {
+  const map = {};
+  for (const p of InstrumentCatalog) {
+    (map[p.category] ||= []).push(p);
+  }
+  return map;
 }

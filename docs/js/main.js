@@ -290,6 +290,10 @@ class App {
     this._handlePatternModules();
 
     this.audio.setFx(this.project.fx, this.project.tempo);
+    if (!this.project.master) {
+      this.project.master = { userGain: 0.85, autoAtten: true, limiter: true };
+    }
+    this.audio.setMaster(this.project.master);
     ensureFxLists(this.project.score);
     if (!this.sequencer.isPlaying) {
       this._fxAutoLatch.clear();

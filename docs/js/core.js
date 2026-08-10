@@ -193,7 +193,8 @@ export function clonePatch(p) {
 }
 
 export const PatchBank = {
-  Channels: 8,
+  /** Raised so Instrument lab can host the full 30-preset catalog. */
+  Channels: 32,
   clamp(ch) {
     return Math.min(this.Channels, Math.max(1, ch | 0));
   },
@@ -700,6 +701,8 @@ export class Lane {
      * Set on keyboard-create or via head/term instrument picker — not by distance.
      */
     this.instrumentId = null;
+    /** When true, lane still runs but produces no notes (one-click mute). */
+    this.muted = false;
     // Gray-out window: inactive prefix/suffix while reshaping (indices into path)
     this.activeFrom = 0;
     this.activeTo = null; // exclusive; null = steps.length
@@ -1516,6 +1519,17 @@ export class Project {
     // Torus defaults (customizable, min 2×2)
     this.gridW = 32;
     this.gridH = 16;
+    /**
+     * Compact master bus (always-on corner knobs).
+     * userGain: manual master (0–1.5).
+     * autoAtten: when peak exceeds ~-1 dBFS, pull gain down.
+     * limiter: soft brickwall ceiling after atten.
+     */
+    this.master = {
+      userGain: 0.85,
+      autoAtten: true,
+      limiter: true,
+    };
   }
 
   syncGrid() {
@@ -1606,6 +1620,13 @@ export const ProjectFormat = {
       lines.push("meta haiku " + String(project.haiku).replace(/\s+/g, " ").trim());
     }
     lines.push("fx " + writeFx(project.fx));
+    if (project.master) {
+      lines.push(
+        "master gain=" + F(project.master.userGain ?? 0.85) +
+        " auto=" + (project.master.autoAtten !== false ? "1" : "0") +
+        " lim=" + (project.master.limiter !== false ? "1" : "0"),
+      );
+    }
     for (let ch = 1; ch <= PatchBank.Channels; ch++) {
       lines.push("patch " + ch + " " + writePatch(PatchBank.get(project.patches, ch)));
     }
@@ -1657,6 +1678,18 @@ export const ProjectFormat = {
         case "fx":
           readFx(project.fx, tokens);
           break;
+        case "master": {
+          if (!project.master) {
+            project.master = { userGain: 0.85, autoAtten: true, limiter: true };
+          }
+          for (let i = 1; i < tokens.length; i++) {
+            const [k, v] = split(tokens[i]);
+            if (k === "gain") project.master.userGain = readFloat(v);
+            else if (k === "auto") project.master.autoAtten = v === "1" || v === "true";
+            else if (k === "lim") project.master.limiter = v === "1" || v === "true";
+          }
+          break;
+        }
         case "patch":
           readPatchLine(project, tokens);
           break;
@@ -1731,6 +1764,7 @@ function writeLane(lines, score, lane) {
     }
   }
   if (lane.circular) head += " circular=1";
+  if (lane.muted) head += " muted=1";
   if (lane.instrumentId) head += " inst=" + lane.instrumentId;
   if (lane.path.length) {
     head += " path=" + lane.path.map((p) => p.x + "," + p.y).join(";");
@@ -2008,6 +2042,7 @@ function readLane(score, tokens, number, links) {
     else if (key === "name" && tile instanceof ChannelTile) tile.label = decodeLaneName(value);
     else if (key === "from") links.push({ branch: lane, point: readPoint(value, number) });
     else if (key === "circular") lane.circular = value === "1" || value === "true";
+    else if (key === "muted") lane.muted = value === "1" || value === "true";
     else if (key === "inst") lane.instrumentId = value || null;
     else if (key === "path") {
       lane.path = value.split(";").filter(Boolean).map((pair) => {
@@ -2422,6 +2457,7 @@ export class Sequencer {
 
   descend(step, runner, startSample, stepSeconds, output) {
     const channel = runner.channel;
+    const muted = !!(runner.originLane?.muted || runner.lane?.muted);
     let destination = null;
     for (const tile of step.tiles) {
       if ((tile instanceof CycleGateTile || tile instanceof ProbGateTile) &&
@@ -2431,13 +2467,16 @@ export class Sequencer {
       if (tile instanceof ParamTile) {
         this.apply(tile, channel);
       } else if (tile instanceof NoteTile) {
-        output.push(noteEventFromPatch(
-          this._working[channel - 1],
-          tile.note,
-          tile.length * stepSeconds,
-          startSample,
-          channel,
-        ));
+        // Muted lanes still advance the playhead but emit no notes
+        if (!muted) {
+          output.push(noteEventFromPatch(
+            this._working[channel - 1],
+            tile.note,
+            tile.length * stepSeconds,
+            startSample,
+            channel,
+          ));
+        }
       } else if (tile instanceof JumpTile) {
         const branch = this.project.score.destinationOf(tile);
         if (branch && branch.steps.length > 0) destination = branch;

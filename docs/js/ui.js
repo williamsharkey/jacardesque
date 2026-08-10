@@ -43,6 +43,7 @@ import {
   findInstAt,
   InstTypes,
   InstParamBars,
+  INST_PARAMS_PER_PAGE,
   instParamValue,
   setInstParamValue,
   instrumentColor,
@@ -650,6 +651,16 @@ export class ScoreView {
       return;
     }
 
+    // Lane mute toggle (small cell next to head)
+    const muteLane = this._hitLaneMute(point);
+    if (muteLane) {
+      e.preventDefault();
+      muteLane.muted = !muteLane.muted;
+      this.onLaneMuteToggle?.(muteLane);
+      this.paint();
+      return;
+    }
+
     // Instrument widget hits: grip (move), param sliders (scrub / drag-out as chan)
     const instHit = this._hitInstWidget(pos);
     if (instHit) {
@@ -659,6 +670,15 @@ export class ScoreView {
       this.selectedAutoId = null;
       this.selectedPathId = null;
       this.onInstSelect?.(instHit.instId);
+      if (instHit.kind === "pagePrev" || instHit.kind === "pageNext") {
+        const mod = this.score.instruments.find((m) => m.id === instHit.instId);
+        if (mod) {
+          const pages = Math.max(1, Math.ceil(InstParamBars.length / INST_PARAMS_PER_PAGE));
+          mod.paramPage = ((mod.paramPage | 0) + (instHit.kind === "pageNext" ? 1 : -1) + pages) % pages;
+        }
+        this.paint();
+        return;
+      }
       if (instHit.kind === "grip") {
         const mod = this.score.instruments.find((m) => m.id === instHit.instId);
         this._instMoveDrag = {
@@ -2073,6 +2093,23 @@ export class ScoreView {
     return dx * dx + dy * dy <= (b.r + 2) * (b.r + 2);
   }
 
+  /** Mute switch cell: one grid step west of the channel head (or east if wrapped). */
+  laneMutePoint(lane) {
+    if (!lane?.channel) return null;
+    lane.ensurePath?.();
+    const head = lane.headPoint;
+    return this.score.wrap(gp(head.x - 1, head.y));
+  }
+
+  _hitLaneMute(point) {
+    if (!point || !this.score) return null;
+    for (const lane of this.score.channelLanes || []) {
+      const mp = this.laneMutePoint(lane);
+      if (mp && mp.x === point.x && mp.y === point.y) return lane;
+    }
+    return null;
+  }
+
   /** Circle ✕ at top-right of a selected object; records hit target. */
   _drawDeleteBadge(ctx, pixelRect, kind, id) {
     const r = 8;
@@ -2137,11 +2174,18 @@ export class ScoreView {
     const h = mod.h * Style.StrideY - Style.Gap;
     const pad = 4;
     const topH = 18;
+    const pageH = 14;
     const grip = { x: o.x + pad, y: o.y + pad, w: w - pad * 2, h: topH };
+    const pageCount = Math.max(1, Math.ceil(InstParamBars.length / INST_PARAMS_PER_PAGE));
+    if (mod.paramPage == null) mod.paramPage = 0;
+    mod.paramPage = ((mod.paramPage % pageCount) + pageCount) % pageCount;
+    const page = mod.paramPage | 0;
+    const start = page * INST_PARAMS_PER_PAGE;
+    const pageParams = InstParamBars.slice(start, start + INST_PARAMS_PER_PAGE);
     const bars = [];
-    let y = o.y + pad + topH + 4;
-    const rowH = 18;
-    for (const p of InstParamBars) {
+    let y = o.y + pad + topH + 3;
+    const rowH = 16;
+    for (const p of pageParams) {
       bars.push({
         key: p.key,
         label: p.label,
@@ -2149,11 +2193,28 @@ export class ScoreView {
         max: p.max,
         def: p.def,
         row: { x: o.x + pad, y, w: w - pad * 2, h: rowH },
-        bar: { x: o.x + pad + 2, y: y + 3, w: w - pad * 2 - 4, h: 12 },
+        bar: { x: o.x + pad + 2, y: y + 2, w: w - pad * 2 - 4, h: 11 },
       });
       y += rowH;
     }
-    return { def, o, w, h, grip, bars, pad, topH };
+    // Pagination strip: ‹ · · · ›
+    const pageStrip = {
+      x: o.x + pad,
+      y: o.y + h - pad - pageH,
+      w: w - pad * 2,
+      h: pageH,
+    };
+    const prevHit = { x: pageStrip.x, y: pageStrip.y, w: 16, h: pageH };
+    const nextHit = {
+      x: pageStrip.x + pageStrip.w - 16,
+      y: pageStrip.y,
+      w: 16,
+      h: pageH,
+    };
+    return {
+      def, o, w, h, grip, bars, pad, topH,
+      page, pageCount, pageStrip, prevHit, nextHit,
+    };
   }
 
   _hitInstWidget(pos) {
@@ -2164,6 +2225,12 @@ export class ScoreView {
       const L = this._instLayout(mod);
       if (pos.x < L.o.x || pos.x > L.o.x + L.w ||
           pos.y < L.o.y || pos.y > L.o.y + L.h) continue;
+      if (this._hitRect(pos, L.prevHit)) {
+        return { kind: "pagePrev", instId: mod.id };
+      }
+      if (this._hitRect(pos, L.nextHit)) {
+        return { kind: "pageNext", instId: mod.id };
+      }
       for (const row of L.bars) {
         if (this._hitRect(pos, row.row)) {
           const t = Math.min(1, Math.max(0, (pos.x - row.bar.x) / (row.bar.w || 1)));
@@ -2187,7 +2254,7 @@ export class ScoreView {
 
   _drawInstrumentModule(ctx, mod, selected, pulse) {
     const L = this._instLayout(mod);
-    const { def, o, w, h, grip, bars } = L;
+    const { def, o, w, h, grip, bars } = L; // pageStrip drawn below
     const col = instrumentColor(mod);
     const project = this.sequencer?.project;
 
@@ -2253,6 +2320,28 @@ export class ScoreView {
         b.y + b.h / 2,
       );
     }
+    // Page strip: ‹ · · · ›
+    const { pageStrip, prevHit, nextHit, page, pageCount } = L;
+    ctx.fillStyle = "#0f172a";
+    roundRect(ctx, pageStrip.x, pageStrip.y, pageStrip.w, pageStrip.h, 3);
+    ctx.fill();
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "700 10px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("‹", prevHit.x + prevHit.w / 2, prevHit.y + prevHit.h / 2);
+    ctx.fillText("›", nextHit.x + nextHit.w / 2, nextHit.y + nextHit.h / 2);
+    const dotY = pageStrip.y + pageStrip.h / 2;
+    const midX = pageStrip.x + pageStrip.w / 2;
+    const gap = 7;
+    const startX = midX - ((pageCount - 1) * gap) / 2;
+    for (let i = 0; i < pageCount; i++) {
+      ctx.beginPath();
+      ctx.arc(startX + i * gap, dotY, i === page ? 2.5 : 1.6, 0, Math.PI * 2);
+      ctx.fillStyle = i === page ? "#e0f2fe" : "#64748b";
+      ctx.fill();
+    }
+
     if (selected) {
       this._drawDeleteBadge(ctx, { x: o.x, y: o.y, w, h }, "inst", mod.id);
     }
@@ -2719,16 +2808,18 @@ export class ScoreView {
     for (const lane of this.score.lanes) {
       lane.ensurePath();
       const col = laneColor(this.score, lane, Style.NoteLine);
+      if (lane.channel) this._drawLaneMute(ctx, lane, col);
+      const muteAlpha = lane.muted ? 0.4 : 1;
       if (lane.circular) {
         this._drawCircularJoin(ctx, lane.headPoint, col);
       } else {
         this._drawStartMark(ctx, lane.headPoint, lane.head, col);
-        this._drawTile(ctx, Terminator, lane.termPoint, 1, col);
+        this._drawTile(ctx, Terminator, lane.termPoint, muteAlpha, col);
       }
       for (let i = 0; i < lane.steps.length; i++) {
         const active = lane.isStepActive(i);
         // Deselected (outside start–end window): still readable at half opacity
-        const alpha = active ? 1 : 0.5;
+        const alpha = (active ? 1 : 0.5) * muteAlpha;
         for (let d = 0; d < lane.steps[i].depth; d++) {
           const lifted = this._isLifted(lane, i, d);
           this._drawTile(
@@ -2751,6 +2842,31 @@ export class ScoreView {
         }
       }
     }
+  }
+
+  /** One-click mute toggle west of the head — M / · */
+  _drawLaneMute(ctx, lane, col) {
+    const mp = this.laneMutePoint(lane);
+    if (!mp) return;
+    // Don't paint over occupied non-free cells (except own head neighborhood is free-ish)
+    const cell = this.score.at(mp);
+    if (cell.kind !== CellKind.Empty && cell.lane !== lane) return;
+    const r = Style.cellRect(mp);
+    const on = !lane.muted;
+    ctx.save();
+    ctx.fillStyle = on ? withAlpha(col, 0.35) : withAlpha("#3f3f46", 0.7);
+    roundRect(ctx, r.x + 2, r.y + 4, r.w - 4, r.h - 8, 4);
+    ctx.fill();
+    ctx.strokeStyle = on ? col : withAlpha("#a1a1aa", 0.5);
+    ctx.lineWidth = 1.25;
+    roundRect(ctx, r.x + 2.5, r.y + 4.5, r.w - 5, r.h - 9, 4);
+    ctx.stroke();
+    ctx.fillStyle = on ? "#0c0c10" : "#a1a1aa";
+    ctx.font = "700 9px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(on ? "ON" : "off", r.x + r.w / 2, r.y + r.h / 2);
+    ctx.restore();
   }
 
   /** Dal segno-style return mark at lane start (before first beat). */
@@ -3470,6 +3586,11 @@ export class JacquardUI {
     this.scroll.append(this.canvas);
     this.body.append(this.scroll);
 
+    // Compact master bus — bottom-right, always visible
+    this.masterBar = el("div", "master-bar");
+    root.append(this.masterBar);
+    this._buildMasterBar();
+
     this.view = new ScoreView(this.canvas, this.scroll);
     this.view.score = app.project.score;
     this.view.sequencer = app.sequencer;
@@ -3518,6 +3639,11 @@ export class JacquardUI {
       this._refreshDockLaneLabel();
       this.view.paint();
       this.canvas.focus();
+    };
+    this.view.onLaneMuteToggle = (lane) => {
+      this.editor.touch();
+      this.app.scheduleSave();
+      this.view.paint();
     };
     this.view.onAutoSelect = (id) => {
       this.editor.clearObjectSelection();
@@ -3650,6 +3776,58 @@ export class JacquardUI {
     this.canvas.focus();
   }
 
+  /** Tiny always-on master: vol · auto-atten · limiter */
+  _buildMasterBar() {
+    const bar = this.masterBar;
+    bar.innerHTML = "";
+    if (!this.app.project.master) {
+      this.app.project.master = { userGain: 0.85, autoAtten: true, limiter: true };
+    }
+    const m = this.app.project.master;
+
+    const vol = el("label", "master-knob");
+    vol.title = "Master volume";
+    const volIn = document.createElement("input");
+    volIn.type = "range";
+    volIn.min = "0";
+    volIn.max = "1.2";
+    volIn.step = "0.01";
+    volIn.value = String(m.userGain ?? 0.85);
+    volIn.addEventListener("input", () => {
+      m.userGain = +volIn.value;
+      this.app.audio?.setMaster?.(m);
+      this.app.scheduleSave();
+    });
+    vol.append(el("span", "master-knob-lab", "Vol"), volIn);
+    bar.append(vol);
+
+    const auto = el("label", "master-check");
+    auto.title = "Auto-attenuate when peaks exceed about −1 dBFS";
+    const autoIn = document.createElement("input");
+    autoIn.type = "checkbox";
+    autoIn.checked = m.autoAtten !== false;
+    autoIn.addEventListener("change", () => {
+      m.autoAtten = autoIn.checked;
+      this.app.audio?.setMaster?.(m);
+      this.app.scheduleSave();
+    });
+    auto.append(autoIn, el("span", null, "Auto"));
+    bar.append(auto);
+
+    const lim = el("label", "master-check");
+    lim.title = "Soft master limiter (ceiling ~0.98 + soft-clip)";
+    const limIn = document.createElement("input");
+    limIn.type = "checkbox";
+    limIn.checked = m.limiter !== false;
+    limIn.addEventListener("change", () => {
+      m.limiter = limIn.checked;
+      this.app.audio?.setMaster?.(m);
+      this.app.scheduleSave();
+    });
+    lim.append(limIn, el("span", null, "Lim"));
+    bar.append(lim);
+  }
+
   /** Fixed bottom keyboard: instrument voice + piano; drag keys / icons onto grid. */
   _buildDockKeyboard() {
     this.dock = el("div", "dock-keyboard");
@@ -3725,23 +3903,32 @@ export class JacquardUI {
     this._rebuildDockInstIcons();
   }
 
-  /** Compact type icons flanking the instrument cycler. */
+  /** Compact type icons flanking the instrument cycler (one per engine family). */
   _rebuildDockInstIcons() {
     if (!this.dockInstLeft || !this.dockInstRight) return;
     this.dockInstLeft.innerHTML = "";
     this.dockInstRight.innerHTML = "";
-    const keys = InstrumentKeys;
+    // Representative presets per family (full 30 live in ground INST menu)
+    const keys = [
+      "kick-punch", "snare-crisp", "hat-closed", "bass-sub",
+      "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
+    ];
     const mid = Math.ceil(keys.length / 2);
     const leftKeys = keys.slice(0, mid);
     const rightKeys = keys.slice(mid);
     const active = this.editor.dockVoiceKey;
+    const activeEntry = InstTypes[active];
     const paint = (host, list) => {
       for (const key of list) {
-        const def = InstTypes[key] || InstTypes.fm;
-        const btn = el("button", "dock-inst-icon" + (key === active ? " active" : ""));
+        const def = InstTypes[key] || InstTypes["fm-lead"];
+        const isActive = active === key ||
+          (activeEntry && def && activeEntry.instrument === def.instrument &&
+            !keys.includes(active) && key === keys.find((k) =>
+              (InstTypes[k]?.instrument) === activeEntry.instrument));
+        const btn = el("button", "dock-inst-icon" + (isActive ? " active" : ""));
         btn.type = "button";
         btn.textContent = def.label;
-        btn.title = def.name + " — click to select voice · drag onto grid to place";
+        btn.title = def.name + " — click voice · drag to place (full list: ground ↓ INST)";
         btn.dataset.instType = key;
         this._bindDockInstIcon(btn, key);
         host.append(btn);
@@ -4283,6 +4470,13 @@ export class JacquardUI {
   }
 
   buildSoundPanel() {
+    // Prefer on-grid instrument pedals for voice params — hide classic Sound panel
+    // when instruments exist on the score (object-first UX).
+    ensureInstruments(this.editor.score);
+    if ((this.editor.score.instruments || []).length) {
+      this.soundPanel.classList.add("hidden");
+      return;
+    }
     const tile = this.editor.selected;
     const channel = tile instanceof ChannelTile ? tile.channel : 0;
     if (!channel) {
@@ -4400,108 +4594,10 @@ export class JacquardUI {
     const panel = this.fxPanel;
     ensureFxLists(this.editor.score);
     ensureInstruments(this.editor.score);
-    // Hide FX panel when an auto/path inspector owns the tile panel.
-    if (this.editor.selectedAutoId || this.editor.selectedPathId) {
+    // Instruments + FX are fully on-grid objects (✕, sliders, pages) — hide sidebar.
+    if (this.editor.selectedInstId || this.editor.selectedFxId ||
+        this.editor.selectedAutoId || this.editor.selectedPathId) {
       panel.classList.add("hidden");
-      return;
-    }
-
-    // Instrument object selected
-    const inst = this.editor.score.instruments.find(
-      (m) => m.id === this.editor.selectedInstId,
-    );
-    if (inst) {
-      panel.classList.remove("hidden");
-      panel.innerHTML = "";
-      const def = InstTypes[inst.type] || InstTypes.fm;
-      panel.append(el("div", "panel-title", def.name + " · CH" + (inst.channel | 0)));
-      const body = el("div", "panel-body");
-      panel.append(body);
-      body.append(el("div", "caption",
-        "Instrument pedal. Lanes bind automatically: each lane’s end/repeat " +
-        "marker walks (N/E/S/W) to the nearest instrument left corner. " +
-        "Many lanes may share one instrument. Scrub bars or drag values " +
-        "onto the grid as cyan channel triggers."));
-      body.append(el("div", "divider"));
-      body.append(chooser(
-        "Type",
-        InstrumentNames,
-        () => Math.min(InstrumentNames.length - 1, Math.max(0,
-          (InstTypes[inst.type]?.instrument) ?? 0)),
-        (i) => {
-          const key = InstrumentKeys[i] || "fm";
-          inst.type = key;
-          syncInstrumentPatch(this.editor.project, inst);
-          this.editor.commit();
-          this.view.paint();
-          this.buildFxPanel();
-        },
-      ));
-      body.append(barRow(
-        "Channel",
-        ChannelRange,
-        () => inst.channel | 0,
-        (v) => {
-          inst.channel = Math.min(PatchBank.Channels, Math.max(1, Math.round(v)));
-          this.editor.commit();
-          this.view.paint();
-        },
-      ));
-      body.append(el("div", "divider"));
-      for (const p of InstParamBars) {
-        const range = p.key === "moddecay"
-          ? Ranges.seconds(p.min, p.max)
-          : Ranges.amount(p.min, p.max);
-        body.append(barRow(
-          p.label,
-          range,
-          () => instParamValue(this.editor.project, inst, p.key),
-          (v) => {
-            setInstParamValue(this.editor.project, inst, p.key, v);
-            this.app.clearChanLatch?.(inst.channel, p.key);
-            this.app.scheduleSave();
-            this.view.paint();
-          },
-          null,
-          {
-            getTicks: () => this.editor.score.fxTriggers
-              .filter((tr) => tr.kind === "chan" &&
-                (tr.channel | 0) === (inst.channel | 0) &&
-                tr.paramKey === p.key)
-              .map((tr) => tr.value),
-            isDragOutValid: (cx, cy) => {
-              const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
-              return this.editor.isValidTriggerCell(point);
-            },
-            onDragOut: (value, cx, cy) => {
-              const point = Style.cellAt(this.view.localPoint({ clientX: cx, clientY: cy }));
-              if (!this.editor.isValidTriggerCell(point)) return;
-              const v = Number.isFinite(value) ? value : 0;
-              setInstParamValue(this.editor.project, inst, p.key, v);
-              this.app.clearChanLatch?.(inst.channel, p.key);
-              this.editor.placeTrigger({
-                kind: "chan",
-                channel: inst.channel,
-                paramKey: p.key,
-                value: v,
-                point,
-              });
-              this.canvas.focus();
-            },
-          },
-        ));
-      }
-      body.append(el("div", "divider"));
-      body.append(button("Delete", () => {
-        this.editor.deleteAtCursor();
-        this.editor.clearObjectSelection();
-        this.view.selectedInstId = null;
-        this.view.selectedFxId = null;
-        this.view.selectedAutoId = null;
-        this.view.selectedPathId = null;
-        this.refreshPanels(true);
-        this.canvas.focus();
-      }, 54));
       return;
     }
 

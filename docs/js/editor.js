@@ -41,7 +41,7 @@ import {
   instrumentInstanceName,
   findInstrumentSpawnCell,
 } from "./inst-model.js";
-import { InstrumentKeys, patchFor } from "./instruments.js";
+import { InstrumentKeys, InstrumentCatalog, patchFor, catalogEntry } from "./instruments.js";
 
 export class ScoreEditor {
   constructor({ project, sequencer, audio, getCursor, setCursor }) {
@@ -62,7 +62,7 @@ export class ScoreEditor {
     /** Dock voice: focused instrument instance id (canvas), or null. */
     this.focusInstId = null;
     /** Dock voice type when no instance focused / not yet on canvas. */
-    this.dockVoiceKey = "fm";
+    this.dockVoiceKey = "fm-lead";
   }
 
   clearObjectSelection() {
@@ -123,7 +123,8 @@ export class ScoreEditor {
 
   /** Select a voice type for the keyboard (may not exist on canvas yet). */
   setDockVoiceType(typeKey) {
-    const key = InstrumentKeys.includes(typeKey) ? typeKey : "fm";
+    const entry = catalogEntry(typeKey);
+    const key = entry?.key || "fm-lead";
     this.dockVoiceKey = key;
     ensureInstruments(this.score);
     const existing = this.score.instruments.find((m) => m.type === key);
@@ -179,8 +180,8 @@ export class ScoreEditor {
    */
   placeInstrument(typeKey, near = null, at = null) {
     ensureInstruments(this.score);
-    const key = InstrumentKeys.includes(typeKey) ? typeKey : "fm";
-    const def = InstTypes[key] || InstTypes.fm;
+    const key = catalogEntry(typeKey)?.key || "fm-lead";
+    const def = InstTypes[key] || InstTypes["fm-lead"];
     let cell = null;
     if (at) {
       // Exact placement (ground menu / icon drop) — fail if occupied

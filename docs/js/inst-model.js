@@ -7,39 +7,66 @@ import { ParamTargets, PatchBank } from "./core.js";
 import {
   InstrumentKeys,
   InstrumentNames,
+  InstrumentCatalog,
   parseInstrument,
   instrumentKey,
+  catalogEntry,
   patchFor,
 } from "./instruments.js";
 import { newFxId, fxOccupies, findFxAt } from "./fx-model.js";
 
-/** Compact param bars on the instrument pedal (map to ParamTargets / patch). */
+/** All instrument params (paginated on the pedal: 3 bars + page dots). */
 export const InstParamBars = [
-  { key: "level", label: "Lvl", target: ParamTargets.Level, min: 0, max: 1, def: 0.55 },
+  { key: "level", label: "Lvl", target: ParamTargets.Level, min: 0, max: 1, def: 0.45 },
   { key: "pan", label: "Pan", target: ParamTargets.Pan, min: -1, max: 1, def: 0 },
-  { key: "index", label: "Idx", target: ParamTargets.ModIndex, min: 0, max: 8, def: 1.2 },
+  { key: "index", label: "Idx", target: ParamTargets.ModIndex, min: 0, max: 8, def: 1.0 },
   { key: "moddecay", label: "MDc", target: ParamTargets.ModDecay, min: 0.01, max: 2, def: 0.18 },
+  { key: "ratio", label: "Rat", target: ParamTargets.ModRatio, min: 0.25, max: 8, def: 2 },
+  { key: "feedback", label: "Fb", target: ParamTargets.Feedback, min: 0, max: 4, def: 0.15 },
+  { key: "carattack", label: "Atk", target: ParamTargets.CarAttack, min: 0.001, max: 1, def: 0.005 },
+  { key: "carrelease", label: "Rel", target: ParamTargets.CarRelease, min: 0.01, max: 3, def: 0.18 },
+  { key: "pitchsweep", label: "PSw", target: ParamTargets.PitchSweep, min: -8, max: 8, def: 0 },
+  { key: "pitchdecay", label: "PDc", target: ParamTargets.PitchDecay, min: 0.01, max: 1, def: 0.05 },
+  { key: "gate", label: "Gat", target: ParamTargets.Gate, min: 0.05, max: 4, def: 1 },
+  { key: "rsend", label: "Rvb", target: ParamTargets.ReverbSend, min: 0, max: 1, def: 0.1 },
+  { key: "dsend", label: "Dly", target: ParamTargets.DelaySend, min: 0, max: 1, def: 0.05 },
 ];
 
+/** Params visible per page on the pedal (excluding grip + page strip). */
+export const INST_PARAMS_PER_PAGE = 3;
+
 export const InstTypes = Object.fromEntries(
-  InstrumentKeys.map((key, i) => [key, {
-    label: abbreviateInst(InstrumentNames[i]),
-    name: InstrumentNames[i],
-    instrument: i,
+  InstrumentCatalog.map((p) => [p.key, {
+    label: abbreviateInst(p.name),
+    name: p.name,
+    instrument: p.engine,
+    catalogKey: p.key,
+    category: p.category,
     w: 3,
-    h: 4, // grip + 4 param rows
+    // grip + 3 bars + page strip
+    h: 4,
   }]),
 );
+// Legacy aliases so old sketches / dock keys still resolve
+for (const [legacy, key] of Object.entries({
+  fm: "fm-lead", kick: "kick-punch", snare: "snare-crisp", hat: "hat-closed",
+  bass: "bass-sub", pad: "pad-warm", bell: "bell-chime", pluck: "pluck-nylon",
+})) {
+  if (InstTypes[key] && !InstTypes[legacy]) {
+    InstTypes[legacy] = { ...InstTypes[key], catalogKey: key };
+  }
+}
 
 function abbreviateInst(name) {
   if (!name) return "?";
-  if (name.length <= 3) return name.toUpperCase();
-  // Kick→KIK, Snare→SNR, Hat→HAT, Bass→BAS, Pad→PAD, Bell→BEL, Pluck→PLK
-  const map = {
-    FM: "FM", Kick: "KIK", Snare: "SNR", Hat: "HAT",
-    Bass: "BAS", Pad: "PAD", Bell: "BEL", Pluck: "PLK",
-  };
-  return map[name] || name.slice(0, 3).toUpperCase();
+  const n = String(name).trim();
+  if (n.length <= 3) return n.toUpperCase();
+  // "Kick Deep" → KD, "Hat Closed" → HC, "FM Lead" → FML
+  const parts = n.split(/[\s\-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0] + (parts[2]?.[0] || "")).toUpperCase().slice(0, 3);
+  }
+  return n.slice(0, 3).toUpperCase();
 }
 
 export function ensureInstruments(score) {
@@ -77,8 +104,9 @@ export function createInstrumentModule(type, x, y, {
   id = null,
   channel = 1,
 } = {}) {
-  const key = instrumentKey(parseInstrument(type));
-  const def = InstTypes[key] || InstTypes.fm;
+  const entry = catalogEntry(type);
+  const key = entry.key;
+  const def = InstTypes[key] || InstTypes["fm-lead"] || Object.values(InstTypes)[0];
   return {
     id: id || newFxId("inst"),
     type: key,
@@ -87,6 +115,7 @@ export function createInstrumentModule(type, x, y, {
     w: def.w,
     h: def.h,
     channel: PatchBank.clamp(channel),
+    paramPage: 0,
   };
 }
 
@@ -174,7 +203,6 @@ export function syncInstrumentPatch(project, inst, { soft = false } = {}) {
   const patch = PatchBank.get(project.patches, inst.channel);
   const preset = patchFor(inst.type);
   if (soft) {
-    // Keep user-tuned level/pan; refresh voice character
     const level = patch.level;
     const pan = patch.pan;
     Object.assign(patch, preset);
@@ -183,7 +211,9 @@ export function syncInstrumentPatch(project, inst, { soft = false } = {}) {
   } else {
     Object.assign(patch, preset);
   }
-  patch.instrument = parseInstrument(inst.type);
+  // Worklet engine id
+  patch.instrument = catalogEntry(inst.type).engine;
+  patch.catalogKey = catalogEntry(inst.type).key;
 }
 
 export function instParamValue(project, inst, key) {

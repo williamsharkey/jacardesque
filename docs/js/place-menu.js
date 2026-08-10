@@ -3,6 +3,7 @@
 // Empty ground: canvas shell — L/U/R create lane, ↓ create object (see ScoreView).
 
 import { Pitch } from "./core.js";
+import { InstrumentCatalog } from "./instruments.js";
 
 const CAT_PX = 52;
 const ITEM_PX = 28;
@@ -66,16 +67,11 @@ export function buildGroundObjectCategories() {
     {
       id: "inst",
       label: "INST",
-      items: [
-        { label: "KICK", place: { kind: "INST", instType: "kick" } },
-        { label: "SNARE", place: { kind: "INST", instType: "snare" } },
-        { label: "HAT", place: { kind: "INST", instType: "hat" } },
-        { label: "BASS", place: { kind: "INST", instType: "bass" } },
-        { label: "PAD", place: { kind: "INST", instType: "pad" } },
-        { label: "BELL", place: { kind: "INST", instType: "bell" } },
-        { label: "PLUCK", place: { kind: "INST", instType: "pluck" } },
-        { label: "FM", place: { kind: "INST", instType: "fm" } },
-      ],
+      // Full 30-preset catalog (labels truncated for grid shell)
+      items: InstrumentCatalog.map((p) => ({
+        label: p.name.toUpperCase().slice(0, 12),
+        place: { kind: "INST", instType: p.key },
+      })),
     },
     {
       id: "fx",
