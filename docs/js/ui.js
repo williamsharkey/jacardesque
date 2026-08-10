@@ -4074,9 +4074,9 @@ export class JacquardUI {
     if (!this.dockInstLeft || !this.dockInstRight) return;
     this.dockInstLeft.innerHTML = "";
     this.dockInstRight.innerHTML = "";
-    // Drum kits grouped first, then synth family reps (full list: ground INST)
+    // TR drum machines first (one object = full kit), then synth family reps
     const keys = [
-      "kit-punch", "kit-soft", "kit-hard", "kit-room",
+      "tr-606", "tr-707", "tr-808", "tr-909",
       "bass-sub", "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
       "string-nylon", "wave-soft", "organ-church",
       "dx7-ep", "grain-pad", "samp-keys",

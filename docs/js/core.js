@@ -185,6 +185,8 @@ export function defaultPatch() {
     pitchDecay: 0.05,
     reverbSend: 0.1,
     delaySend: 0.05,
+    /** Sample drum bank id: "606"|"707"|"808"|"909" (engine 14) */
+    drumBank: null,
   };
 }
 
@@ -358,6 +360,8 @@ export function noteEventFromPatch(patch, midiNote, gateSeconds, startSample, ch
     pitchDecay: patch.pitchDecay,
     reverbSend: Math.min(1, Math.max(0, patch.reverbSend ?? 0)),
     delaySend: Math.min(1, Math.max(0, patch.delaySend ?? 0)),
+    // Sample drum machine bank (TR-606/707/808/909); null = procedural kit
+    drumBank: patch.drumBank || null,
   };
 }
 
@@ -1805,7 +1809,7 @@ function writePatch(p) {
     "fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck",
     "string", "wave", "organ", "dx7", "granular", "sampler", "drum",
   ];
-  return "instrument=" + (names[inst] || "fm") +
+  let s = "instrument=" + (names[inst] || "fm") +
     " level=" + F(p.level) +
     " pan=" + F(p.pan) +
     " gate=" + F(p.gateScale) +
@@ -1819,6 +1823,8 @@ function writePatch(p) {
     " pd=" + F(p.pitchDecay) +
     " rsend=" + F(p.reverbSend) +
     " dsend=" + F(p.delaySend);
+  if (p.drumBank) s += " bank=" + String(p.drumBank);
+  return s;
 }
 
 function writeFx(fx) {
@@ -2157,6 +2163,7 @@ function readPatch(patch, tokens, from) {
       case "pd": patch.pitchDecay = value; break;
       case "rsend": patch.reverbSend = value; break;
       case "dsend": patch.delaySend = value; break;
+      case "bank": patch.drumBank = text || null; break;
     }
   }
 }

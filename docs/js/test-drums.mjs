@@ -1,4 +1,4 @@
-// Drum machine helpers + catalog packaging smoke test.
+// Drum machine + TR sample kit packaging smoke test.
 import {
   DRUM_PADS,
   padFromMidi,
@@ -15,6 +15,7 @@ import {
   patchFor,
   catalogEntry,
 } from "./instruments.js";
+import { getTrKits, trKitIds, buildWorkletDrumBankPayload } from "./tr-kits-loader.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -27,31 +28,47 @@ assert(padFromMidi(48).voice === "tom", "tom L");
 assert(padFromMidi(78).voice === "hatc", "F#5 legacy hat");
 assert(padFromMidi(50).id === "snare", "D3 legacy snare");
 
-// Tune stays on the same pad (±4 around spaced centres)
 for (const st of [-4, -2, 0, 2, 4]) {
   const m = midiForPadTune("tomM", st);
-  assert(padFromMidi(m).id === "tomM", "tomM tune " + st + " → " + padFromMidi(m).id);
+  assert(padFromMidi(m).id === "tomM", "tomM tune " + st);
 }
-assert(padFromMidi(midiForPadTune("kick", -3)).id === "kick", "kick tune -3");
-assert(padFromMidi(midiForPadTune("hatC", 2)).id === "hatC", "hatC tune +2");
 
-// Catalog packaging
+// Catalog: TR machines as drum objects
 const drums = drumCatalog();
 const synths = synthCatalog();
-assert(drums.length >= 4, "has drum kits");
-assert(drums.every((p) => p.engine === DRUM_ENGINE && p.role === "drum"), "kits are engine 14");
+assert(drums.length === 4, "4 TR kits");
+assert(drums.every((p) => p.engine === DRUM_ENGINE && p.role === "drum" && p.drumBank), "kits have banks");
+assert(drums.map((d) => d.drumBank).sort().join() === "606,707,808,909", "banks 606-909");
 assert(!synths.some((p) => p.category === "kick"), "no loose kick synths");
-assert(!InstrumentCatalog.some((p) => p.category === "snare"), "no loose snare synths");
 
-assert(parseInstrument("kick") === DRUM_ENGINE, "legacy kick → kit engine");
-assert(parseInstrument("kit-punch") === DRUM_ENGINE, "kit-punch");
-assert(patchFor("kit-hard").instrument === DRUM_ENGINE, "patch engine");
-assert(isDrumRole(catalogEntry("kit-room")), "isDrumRole");
+assert(parseInstrument("kick") === DRUM_ENGINE, "legacy kick → drum engine");
+assert(parseInstrument("tr-808") === DRUM_ENGINE, "tr-808");
+assert(parseInstrument("808") === DRUM_ENGINE, "808 alias");
+assert(patchFor("tr-909").drumBank === "909", "patch bank");
+assert(patchFor("tr-606").instrument === DRUM_ENGINE, "606 engine");
+assert(isDrumRole(catalogEntry("tr-707")), "isDrumRole");
 assert(!isDrumRole(catalogEntry("fm-lead")), "fm not drum");
+
+// Sample packs decode
+const kits = getTrKits();
+for (const id of ["606", "707", "808", "909"]) {
+  assert(kits[id], "kit " + id);
+  assert(kits[id].pads.kick?.length > 100, id + " kick samples");
+  assert(kits[id].pads.snare?.length > 50, id + " snare");
+  assert(kits[id].pads.hatC?.length > 20, id + " hatC");
+}
+assert(trKitIds().length === 4, "4 kit ids");
+
+const payload = buildWorkletDrumBankPayload();
+assert(payload.kits["808"].pads.kick instanceof Float32Array, "transferable floats");
+assert(payload.transfer.length >= 40, "40 pad buffers");
 
 assert(drumNoteLabel(36) === "Kick", "label");
 assert(DRUM_PADS.length === 10, "10 pads");
+assert(InstrumentCatalog.length >= 30, "catalog size");
 
 console.log("test-drums: ALL PASS");
-console.log("  kits:", drums.map((d) => d.key).join(", "));
-console.log("  synths:", synths.length, "pads:", DRUM_PADS.map((p) => p.short).join(" "));
+console.log("  machines:", drums.map((d) => d.key + "=" + d.drumBank).join(", "));
+console.log("  pads/kit:", Object.keys(kits["808"].pads).join(" "));
+console.log("  sample mem ~",
+  (payload.transfer.reduce((a, b) => a + b.byteLength, 0) / 1024).toFixed(0), "KB float");

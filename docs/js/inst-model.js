@@ -52,16 +52,18 @@ export const InstTypes = Object.fromEntries(
     catalogKey: p.key,
     category: p.category,
     role: p.role || (isDrumRole(p) ? "drum" : "synth"),
+    drumBank: p.drumBank || null,
     w: INST_FOOTPRINT_W,
     // grip + 3 bars + page strip
     h: INST_FOOTPRINT_H,
   }]),
 );
-// Legacy aliases so old sketches / dock keys still resolve → kits or synths
+// Legacy aliases so old sketches / dock keys still resolve → TR machines or synths
 for (const [legacy, key] of Object.entries({
   fm: "fm-lead",
-  kick: "kit-punch", snare: "kit-punch", hat: "kit-punch",
-  "kick-punch": "kit-punch", "snare-crisp": "kit-punch", "hat-closed": "kit-punch",
+  kick: "tr-808", snare: "tr-808", hat: "tr-808",
+  "kick-punch": "tr-808", "snare-crisp": "tr-808", "hat-closed": "tr-808",
+  "kit-punch": "tr-808", "kit-soft": "tr-606", "kit-hard": "tr-909", "kit-room": "tr-707",
   bass: "bass-sub", pad: "pad-warm", bell: "bell-chime", pluck: "pluck-nylon",
 })) {
   if (InstTypes[key] && !InstTypes[legacy]) {
@@ -77,6 +79,9 @@ export function isDrumInstrumentType(typeKey) {
 function abbreviateInst(name) {
   if (!name) return "?";
   const n = String(name).trim();
+  // TR-808 → 808, TR-606 → 606 (readable on dock icons)
+  const tr = n.match(/^TR[-\s]?(\d{3})$/i);
+  if (tr) return tr[1];
   if (n.length <= 3) return n.toUpperCase();
   // "Kick Deep" → KD, "Hat Closed" → HC, "FM Lead" → FML
   const parts = n.split(/[\s\-]+/).filter(Boolean);

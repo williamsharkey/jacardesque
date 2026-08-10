@@ -42,6 +42,7 @@ export const InstrumentCatalog = catalog.map((p, i) => ({
   index: i,
   engine: clampEngine(p.engine),
   role: p.role || (p.engine === DRUM_ENGINE ? "drum" : "synth"),
+  drumBank: p.drumBank || null,
 }));
 
 export const InstrumentKeys = InstrumentCatalog.map((p) => p.key);
@@ -60,28 +61,36 @@ export function drumCatalog() {
 /** Legacy short keys → catalog key (for old sketches / dock). */
 const LEGACY_ALIAS = {
   fm: "fm-lead",
-  // Old single drum "instruments" → punch kit (pad chosen by note)
-  kick: "kit-punch",
-  snare: "kit-punch",
-  hat: "kit-punch",
-  "kick-deep": "kit-soft",
-  "kick-punch": "kit-punch",
-  "kick-soft": "kit-soft",
-  "kick-hard": "kit-hard",
-  "snare-crisp": "kit-punch",
-  "snare-fat": "kit-hard",
-  "snare-rim": "kit-punch",
-  "snare-room": "kit-room",
-  "hat-closed": "kit-punch",
-  "hat-open": "kit-room",
-  "hat-tight": "kit-hard",
-  "hat-soft": "kit-soft",
+  // Old single-drum "instruments" → TR-808 machine (pad chosen by note)
+  kick: "tr-808",
+  snare: "tr-808",
+  hat: "tr-808",
+  "kick-deep": "tr-808",
+  "kick-punch": "tr-808",
+  "kick-soft": "tr-606",
+  "kick-hard": "tr-909",
+  "snare-crisp": "tr-808",
+  "snare-fat": "tr-909",
+  "snare-rim": "tr-707",
+  "snare-room": "tr-707",
+  "hat-closed": "tr-808",
+  "hat-open": "tr-909",
+  "hat-tight": "tr-606",
+  "hat-soft": "tr-606",
+  "kit-punch": "tr-808",
+  "kit-soft": "tr-606",
+  "kit-hard": "tr-909",
+  "kit-room": "tr-707",
   bass: "bass-sub",
   pad: "pad-warm",
   bell: "bell-chime",
   pluck: "pluck-nylon",
-  drum: "kit-punch",
-  drums: "kit-punch",
+  drum: "tr-808",
+  drums: "tr-808",
+  "606": "tr-606",
+  "707": "tr-707",
+  "808": "tr-808",
+  "909": "tr-909",
 };
 
 export { isDrumRole, DRUM_ENGINE } from "./drums.js";
@@ -143,10 +152,15 @@ export function patchFor(instrument, overrides = {}) {
     pitchDecay: entry.pitchDecay ?? 0.05,
     reverbSend: entry.reverbSend ?? 0.1,
     delaySend: entry.delaySend ?? 0.04,
+    /** Sample drum bank for engine 14: "606"|"707"|"808"|"909" */
+    drumBank: entry.drumBank || null,
     /** UI catalog key (not sent to worklet as engine, stored for recall) */
     catalogKey: entry.key,
   };
-  return Object.assign(base, overrides, { instrument: entry.engine });
+  return Object.assign(base, overrides, {
+    instrument: entry.engine,
+    drumBank: overrides.drumBank !== undefined ? overrides.drumBank : (entry.drumBank || null),
+  });
 }
 
 export function catalogByCategory() {

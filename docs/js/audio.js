@@ -1,6 +1,7 @@
 // Main-thread bridge to the Jacquard AudioWorklet.
 
 import { SendFx } from "./core.js";
+import { buildWorkletDrumBankPayload } from "./tr-kits-loader.js";
 
 export class AudioEngine {
   constructor({ maxVoices = 24, lookahead = 0.12 } = {}) {
@@ -9,6 +10,7 @@ export class AudioEngine {
     this.context = null;
     this.node = null;
     this.ready = false;
+    this._drumBanksLoaded = false;
     this.currentSample = 0;
     this.sampleRate = 48000;
     this.status = {
@@ -77,6 +79,19 @@ export class AudioEngine {
 
     this.node.connect(this.context.destination);
     this.ready = true;
+    // Push free TR sample kits into the worklet (606/707/808/909)
+    this._pushDrumBanks();
+  }
+
+  _pushDrumBanks() {
+    if (!this.node || this._drumBanksLoaded) return;
+    try {
+      const { kits, transfer } = buildWorkletDrumBankPayload();
+      this.node.port.postMessage({ type: "drumBanks", kits }, transfer);
+      this._drumBanksLoaded = true;
+    } catch (err) {
+      console.warn("TR drum banks failed to load", err);
+    }
   }
 
   async resume() {

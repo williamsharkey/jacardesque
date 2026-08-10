@@ -45,7 +45,9 @@ export function isDrumRole(entryOrKey) {
       entryOrKey.engine === DRUM_ENGINE;
   }
   const s = String(entryOrKey).toLowerCase();
-  return s.startsWith("kit-") || s === "drum" || s === "drums";
+  return s.startsWith("kit-") || s.startsWith("tr-") ||
+    s === "drum" || s === "drums" ||
+    s === "606" || s === "707" || s === "808" || s === "909";
 }
 
 export function padById(id) {

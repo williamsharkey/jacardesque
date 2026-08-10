@@ -153,6 +153,9 @@ class Voice {
 
   trigger(note, sampleRate) {
     this._ensureSmooth(sampleRate);
+    this._sdHostSr = sampleRate;
+    this._sdNote = null; // force sample-drum re-init
+    this._sd = null;
     const wasActive = this.active;
     this.note = note;
     this.active = true;
@@ -468,13 +471,18 @@ class Voice {
 
   /**
    * Drum machine (engine 14): one instrument = full kit.
-   * MIDI selects pad voice; note.frequency tunes body (toms, kick pitch, etc.).
-   * Kit character from shared patch params (sweep, decay, grit).
+   * Prefer free TR sample banks (606/707/808/909) when note.drumBank is set;
+   * otherwise procedural voices. MIDI selects pad; frequency tunes playback rate.
    */
   renderDrumKit(note, time, env) {
+    const padId = drumPadId(note.midi | 0);
+    this._drumVoice = padId;
+    const bankId = note.drumBank != null ? String(note.drumBank) : "";
+    if (bankId && globalThis._jqDrumBanks && globalThis._jqDrumBanks[bankId]) {
+      return this.renderSampleDrumPad(bankId, padId, note, time, env);
+    }
+    // Procedural fallback (Analog kit / samples not loaded yet)
     const voice = drumPadVoice(note.midi | 0);
-    this._drumVoice = voice;
-    // Scale kit globals lightly into per-hit envelope
     const kitDecay = Math.max(0.02, note.modulatorDecay || 0.05);
     const grit = Math.min(1.5, (note.feedback || 0) * 0.4);
     switch (voice) {
@@ -497,6 +505,45 @@ class Voice {
       default:
         return this.renderKick(note, time, env);
     }
+  }
+
+  /**
+   * Sample-based pad playback (shared banks, no alloc).
+   * Rate = note.frequency / padRootHz so Tune shifts pitch of the one-shot.
+   */
+  renderSampleDrumPad(bankId, padId, note, time, env) {
+    const bank = globalThis._jqDrumBanks[bankId];
+    if (!bank) return 0;
+    const data = bank.pads[padId];
+    if (!data || !data.length) return 0;
+
+    // Lazy per-voice playhead state (reset on trigger via note start)
+    if (!this._sd || this._sdNote !== note) {
+      this._sd = {
+        pos: 0,
+        rate: 1,
+        rootHz: drumPadRootHz(padId),
+      };
+      this._sdNote = note;
+      const freq = note.frequency > 0 ? note.frequency : this._sd.rootHz;
+      // Sample bank authored near pad centre pitch; rate tracks tune offset
+      this._sd.rate = (freq / this._sd.rootHz) * (bank.sampleRate / this._sdHostSr);
+      // Also bake mild pitchSweep on rate start
+      if (note.pitchSweep) {
+        this._sd.rate *= Math.pow(2, Math.min(2, Math.max(-2, note.pitchSweep)) * 0.02);
+      }
+      this._sd.pos = 0;
+    }
+    const pos = this._sd.pos;
+    const n = data.length;
+    if (pos >= n - 1) return 0;
+    const i0 = pos | 0;
+    const frac = pos - i0;
+    const i1 = i0 + 1 < n ? i0 + 1 : i0;
+    let s = data[i0] * (1 - frac) + data[i1] * frac;
+    this._sd.pos = pos + this._sd.rate;
+    // Soft click of env (samples already have transient)
+    return s * env * 0.95;
   }
 
   /** Short stick-on-rim click. */
@@ -559,25 +606,25 @@ class Voice {
 // ---------------------------------------------------------------------------
 // Spaced centres (match docs/js/drums.js) so retune stays on the same pad.
 const DRUM_PAD_CENTRES = [
-  { midi: 36, voice: "kick" },
-  { midi: 38, voice: "snare" },
-  { midi: 41, voice: "rim" },
-  { midi: 44, voice: "clap" },
-  { midi: 48, voice: "tom" },
-  { midi: 58, voice: "tom" },
-  { midi: 68, voice: "tom" },
-  { midi: 74, voice: "hatc" },
-  { midi: 80, voice: "hato" },
-  { midi: 86, voice: "perc" },
+  { midi: 36, id: "kick", voice: "kick", hz: 65.41 },
+  { midi: 38, id: "snare", voice: "snare", hz: 73.42 },
+  { midi: 41, id: "rim", voice: "rim", hz: 87.31 },
+  { midi: 44, id: "clap", voice: "clap", hz: 103.83 },
+  { midi: 48, id: "tomL", voice: "tom", hz: 130.81 },
+  { midi: 58, id: "tomM", voice: "tom", hz: 233.08 },
+  { midi: 68, id: "tomH", voice: "tom", hz: 415.3 },
+  { midi: 74, id: "hatC", voice: "hatc", hz: 587.33 },
+  { midi: 80, id: "hatO", voice: "hato", hz: 830.61 },
+  { midi: 86, id: "perc", voice: "perc", hz: 1174.7 },
 ];
 
-function drumPadVoice(midi) {
+function drumPadEntry(midi) {
   const m = midi | 0;
-  // Legacy F#5/G#5 hats in factory sketches
-  if (m >= 77 && m <= 90) return (m & 1) === 0 ? "hatc" : "hato";
-  // Legacy factory snare on D3 only
-  if (m === 50) return "snare";
-  if (m < 34) return "kick";
+  if (m >= 77 && m <= 90) {
+    return (m & 1) === 0 ? DRUM_PAD_CENTRES[7] : DRUM_PAD_CENTRES[8];
+  }
+  if (m === 50) return DRUM_PAD_CENTRES[1];
+  if (m < 34) return DRUM_PAD_CENTRES[0];
   let best = DRUM_PAD_CENTRES[0];
   let bestD = 999;
   for (const p of DRUM_PAD_CENTRES) {
@@ -587,8 +634,26 @@ function drumPadVoice(midi) {
       best = p;
     }
   }
-  return best.voice;
+  return best;
 }
+
+function drumPadVoice(midi) {
+  return drumPadEntry(midi).voice;
+}
+
+function drumPadId(midi) {
+  return drumPadEntry(midi).id;
+}
+
+function drumPadRootHz(padId) {
+  for (const p of DRUM_PAD_CENTRES) {
+    if (p.id === padId) return p.hz;
+  }
+  return 261.63;
+}
+
+// Shared sample banks injected from main thread: { "808": { sampleRate, pads: { kick: Float32Array, ... } }, ... }
+if (typeof globalThis._jqDrumBanks === "undefined") globalThis._jqDrumBanks = null;
 
 class VoicePool {
   constructor(maxVoices) {
@@ -1429,6 +1494,9 @@ class JacquardProcessor extends AudioWorkletProcessor {
       if (msg.autoAtten != null) this.autoAttenOn = !!msg.autoAtten;
       if (msg.limiter != null) this.limiterOn = !!msg.limiter;
       if (!this.autoAttenOn) this.autoAttenGain = 1;
+    } else if (msg.type === "drumBanks") {
+      // Free TR sample packs (606/707/808/909) — one bank per machine object
+      globalThis._jqDrumBanks = msg.kits || null;
     }
   }
 

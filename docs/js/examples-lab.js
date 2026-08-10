@@ -26,7 +26,7 @@ function ch(num, div, label) {
 
 /** Rating-friendly pitches per category. */
 const DEMO_NOTE = {
-  drums: "C2", // kick pad on kit
+  drums: "C2", // kick pad on TR kit
   bass: "C2",
   pad: "C3",
   bell: "E5",
