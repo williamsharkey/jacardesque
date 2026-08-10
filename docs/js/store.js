@@ -1,57 +1,170 @@
-// Project save/load via localStorage — browser stand-in for ProjectStore.cs
+// Sketch store — auto-save, factory seeds, prev/next, duplicate, new.
 
-import { ProjectFormat } from "./core.js";
+import { Project, ProjectFormat } from "./core.js";
+import { FACTORY_SKETCHES, buildFactorySketch } from "./examples.js";
 
-const PREFIX = "jacquardesque:score:";
+const PREFIX = "jacquardesque:v2:score:";
+const INDEX_KEY = "jacquardesque:v2:index";
+const CURRENT_KEY = "jacquardesque:v2:current";
+const SEEDED_KEY = "jacquardesque:v2:seeded";
 
 export class ProjectStore {
   constructor() {
-    this.name = "sketch";
+    this.name = "rain-on-tin";
+    this._index = null;
   }
 
   key(name = this.name) {
     return PREFIX + name;
   }
 
+  /** Ordered list of sketch ids. */
+  slots() {
+    if (this._index) return this._index.slice();
+    try {
+      const raw = localStorage.getItem(INDEX_KEY);
+      if (raw) {
+        this._index = JSON.parse(raw);
+        return this._index.slice();
+      }
+    } catch (_) { /* fall through */ }
+    this._index = FACTORY_SKETCHES.map((s) => s.id);
+    return this._index.slice();
+  }
+
+  _writeIndex(list) {
+    this._index = list.slice();
+    localStorage.setItem(INDEX_KEY, JSON.stringify(this._index));
+  }
+
+  currentIndex() {
+    const slots = this.slots();
+    const i = slots.indexOf(this.name);
+    return i < 0 ? 0 : i;
+  }
+
+  /** Seed factory sketches once; restore last current sketch. */
+  bootstrap() {
+    const seeded = localStorage.getItem(SEEDED_KEY);
+    if (!seeded) {
+      const ids = [];
+      for (const entry of FACTORY_SKETCHES) {
+        const project = entry.build();
+        localStorage.setItem(this.key(entry.id), ProjectFormat.write(project));
+        ids.push(entry.id);
+      }
+      this._writeIndex(ids);
+      localStorage.setItem(SEEDED_KEY, "1");
+      this.name = ids[0];
+      localStorage.setItem(CURRENT_KEY, this.name);
+      return this.load();
+    }
+
+    this.slots();
+    this.name = localStorage.getItem(CURRENT_KEY) || this._index[0] || "sketch";
+    const result = this.load();
+    if (result.project) return result;
+
+    const first = this._index[0] || FACTORY_SKETCHES[0].id;
+    this.name = first;
+    const rebuilt = buildFactorySketch(first) || Project.createEmpty();
+    this.save(rebuilt);
+    return { project: rebuilt, message: "restored " + first };
+  }
+
   save(project) {
     try {
       localStorage.setItem(this.key(), ProjectFormat.write(project));
-      return "saved " + this.name;
+      localStorage.setItem(CURRENT_KEY, this.name);
+      // Ensure name is in the index.
+      const slots = this.slots();
+      if (!slots.includes(this.name)) {
+        slots.push(this.name);
+        this._writeIndex(slots);
+      }
+      return "auto-saved";
     } catch (error) {
       return "could not save: " + error.message;
     }
   }
 
-  load() {
+  load(name = this.name) {
+    this.name = name;
+    localStorage.setItem(CURRENT_KEY, this.name);
     const raw = localStorage.getItem(this.key());
     if (raw == null) {
-      return { project: null, message: "no file called " + this.name };
+      // Try factory rebuild
+      const factory = buildFactorySketch(name);
+      if (factory) {
+        this.save(factory);
+        return { project: factory, message: name };
+      }
+      return { project: null, message: "missing " + name };
     }
     try {
-      return { project: ProjectFormat.read(raw), message: "loaded " + this.name };
+      return { project: ProjectFormat.read(raw), message: name };
     } catch (error) {
-      return { project: null, message: "could not read " + this.name + ": " + error.message };
+      return { project: null, message: "could not read " + name + ": " + error.message };
     }
   }
 
-  slots() {
-    const names = ["sketch", "take-1", "take-2", "take-3"];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(PREFIX)) {
-        const name = key.slice(PREFIX.length);
-        if (!names.includes(name)) names.push(name);
-      }
+  /** Step to adjacent sketch and load it. */
+  step(delta) {
+    const slots = this.slots();
+    if (!slots.length) return { project: null, message: "no sketches" };
+    let i = this.currentIndex() + delta;
+    if (i < 0) i = slots.length - 1;
+    if (i >= slots.length) i = 0;
+    return this.load(slots[i]);
+  }
+
+  /** Duplicate current sketch under a new unique id. */
+  duplicate(project) {
+    const base = (project.title || this.name || "sketch")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "sketch";
+    let id = base + "-copy";
+    let n = 2;
+    const slots = this.slots();
+    while (slots.includes(id) || localStorage.getItem(this.key(id))) {
+      id = base + "-copy-" + n++;
     }
-    return names;
+    const clone = ProjectFormat.read(ProjectFormat.write(project));
+    if (clone.title) clone.title = clone.title + " (copy)";
+    this.name = id;
+    slots.push(id);
+    this._writeIndex(slots);
+    this.save(clone);
+    return { project: clone, message: "duplicated → " + id };
+  }
+
+  /** Create a blank sketch and select it. */
+  createEmpty() {
+    const slots = this.slots();
+    let id = "untitled";
+    let n = 2;
+    while (slots.includes(id) || localStorage.getItem(this.key(id))) {
+      id = "untitled-" + n++;
+    }
+    const project = Project.createEmpty();
+    project.title = "Untitled";
+    project.haiku = "";
+    this.name = id;
+    slots.push(id);
+    this._writeIndex(slots);
+    this.save(project);
+    return { project, message: "new " + id };
   }
 
   listing() {
-    const found = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(PREFIX)) found.push(key.slice(PREFIX.length));
-    }
-    return found.length ? "saved: " + found.join(", ") : "no saved scores";
+    const slots = this.slots();
+    const i = this.currentIndex();
+    return (i + 1) + "/" + slots.length;
+  }
+
+  displayName(project) {
+    if (project?.title) return project.title;
+    return this.name;
   }
 }

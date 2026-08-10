@@ -1,4 +1,4 @@
-// Jacquardesque web app entry — full Web Audio port of keijiro/Jacquard.
+// Jacquardesque web app — multi-timbre worklet + auto-save sketches.
 
 import { Project, Sequencer } from "./core.js";
 import { AudioEngine } from "./audio.js";
@@ -7,15 +7,17 @@ import { ProjectStore } from "./store.js";
 import { JacquardUI } from "./ui.js";
 
 const LOOKAHEAD = 0.12;
-const MAX_VOICES = 24;
+const MAX_VOICES = 32;
+const AUTOSAVE_MS = 400;
 
 class App {
   constructor() {
-    this.project = Project.createSample();
+    this.store = new ProjectStore();
+    const boot = this.store.bootstrap();
+    this.project = boot.project || Project.createEmpty();
     this.sequencer = new Sequencer();
     this.sequencer.project = this.project;
     this.audio = new AudioEngine({ maxVoices: MAX_VOICES, lookahead: LOOKAHEAD });
-    this.store = new ProjectStore();
     this.editor = new ScoreEditor({
       project: this.project,
       sequencer: this.sequencer,
@@ -26,13 +28,14 @@ class App {
     this.ui = null;
     this._pending = [];
     this._raf = 0;
+    this._saveTimer = 0;
+    this.message = boot.message || "";
   }
 
   async boot() {
     const root = document.getElementById("app");
     this.ui = new JacquardUI(root, this);
 
-    // Start audio on first user gesture (browser policy).
     const unlock = async () => {
       try {
         await this.audio.resume();
@@ -68,18 +71,61 @@ class App {
     this.ui.view.refreshPlayheads();
   }
 
+  /** Debounced auto-save after any edit. */
+  scheduleSave() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      this.message = this.store.save(this.project);
+      this.ui?.onSketchMetaChanged?.();
+    }, AUTOSAVE_MS);
+  }
+
+  applyProject(project, message) {
+    if (!project) {
+      this.message = message || "load failed";
+      return;
+    }
+    this.sequencer.stop();
+    this.project = project;
+    this.sequencer.project = project;
+    this.editor.project = project;
+    if (this.audio.ready) this.audio.setFx(this.project.fx, this.project.tempo);
+    this.message = message || this.store.name;
+    this.ui?.onChanged();
+  }
+
+  prevSketch() {
+    this.store.save(this.project);
+    const { project, message } = this.store.step(-1);
+    this.applyProject(project, message);
+  }
+
+  nextSketch() {
+    this.store.save(this.project);
+    const { project, message } = this.store.step(1);
+    this.applyProject(project, message);
+  }
+
+  duplicateSketch() {
+    this.store.save(this.project);
+    const { project, message } = this.store.duplicate(this.project);
+    this.applyProject(project, message);
+  }
+
+  newSketch() {
+    this.store.save(this.project);
+    const { project, message } = this.store.createEmpty();
+    this.applyProject(project, message);
+  }
+
+  // legacy names used by tests
   save() {
     return this.store.save(this.project);
   }
 
   load() {
     const { project, message } = this.store.load();
-    if (!project) return message;
-    this.sequencer.stop();
-    this.project = project;
-    this.sequencer.project = project;
-    this.editor.project = project;
-    if (this.audio.ready) this.audio.setFx(this.project.fx, this.project.tempo);
+    this.applyProject(project, message);
     return message;
   }
 
@@ -105,7 +151,6 @@ class App {
 }
 
 const app = new App();
-// Exposed for automated tests and debugging.
 window.__jacquard = app;
 app.boot().catch((err) => {
   console.error(err);

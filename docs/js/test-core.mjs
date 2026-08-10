@@ -67,7 +67,9 @@ seq.schedule(0, 48000 * 8, 48000, out);
 assert(out.length > 10, "notes over 8s: " + out.length);
 const first = out.filter((n) => n.startSample === 0);
 assert(first.length === 3, "chord size at t0: " + first.length);
-assert(first.every((n) => n.level === 1), "accent lock level");
+// Accent PREL +0.2 on channel level — must lift above the unlocked bank value.
+const bankLevel = proj.patches[0].level;
+assert(first.every((n) => n.level > bankLevel + 0.05), "accent lock raises level");
 
 // --- Cycle gate only on matching pass ---
 // Step 8: GCYC4:3 / F4 / PREL / G#4 / C5 — all notes sit under the gate.

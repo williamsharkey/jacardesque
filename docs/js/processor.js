@@ -112,15 +112,21 @@ function pitchScale(note, time) {
     : FastMath.pow2(note.pitchSweep * FmCurve.snap(time / note.pitchDecay));
 }
 
+// Multi-timbre voice: FM lead + procedural kick/snare/hat/bass/pad/bell/pluck.
+// Cleaner than the prototype defaults: lower indices, softer clip, gentle tone filter.
 class Voice {
   constructor() {
     this.active = false;
     this.note = null;
     this.carrierPhase = 0;
     this.modulatorPhase = 0;
+    this.phase2 = 0;
     this.increment = 0;
     this.feedback1 = 0;
     this.feedback2 = 0;
+    this.noise = 0;
+    this.filter = 0;
+    this.seed = 1;
   }
 
   trigger(note, sampleRate) {
@@ -128,8 +134,12 @@ class Voice {
     this.active = true;
     this.carrierPhase = 0;
     this.modulatorPhase = 0;
+    this.phase2 = 0.37;
     this.feedback1 = 0;
     this.feedback2 = 0;
+    this.noise = 0;
+    this.filter = 0;
+    this.seed = (note.startSample * 1103515245 + 12345) >>> 0 || 1;
     this.increment = note.frequency / sampleRate;
   }
 
@@ -141,21 +151,131 @@ class Voice {
     return this.note.startSample + Math.floor(totalDuration(this.note) * sampleRate);
   }
 
+  // xorshift-ish noise in [-1, 1]
+  rand() {
+    let x = this.seed | 0;
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    this.seed = x >>> 0;
+    return (x | 0) / 2147483648;
+  }
+
   next(time) {
     const note = this.note;
-    const increment = this.increment * pitchScale(note, time);
+    const inst = note.instrument | 0;
+    const env = carrierLevel(note, time);
+    if (env <= 0) return 0;
+
+    let sample = 0;
+    switch (inst) {
+      case 1: sample = this.renderKick(note, time, env); break;
+      case 2: sample = this.renderSnare(note, time, env); break;
+      case 3: sample = this.renderHat(note, time, env); break;
+      case 4: sample = this.renderBass(note, time, env); break;
+      case 5: sample = this.renderPad(note, time, env); break;
+      case 6: sample = this.renderBell(note, time, env); break;
+      case 7: sample = this.renderPluck(note, time, env); break;
+      default: sample = this.renderFm(note, time, env); break;
+    }
+
+    // Soft one-pole tone control — tames digital grit without dulling the note.
+    const cutoff = inst === 3 ? 0.55 : inst === 5 ? 0.12 : 0.28;
+    this.filter += (sample - this.filter) * cutoff;
+    return this.filter * note.level;
+  }
+
+  renderFm(note, time, env) {
+    const scale = pitchScale(note, time);
+    const increment = this.increment * scale;
     const twoPi = FastMath.TwoPi;
+    // Cap modulation so dense chords don't brick-wall.
+    const fb = Math.min(note.feedback, 2.5);
     const mod = FastMath.sin(
-      twoPi * this.modulatorPhase + note.feedback * (this.feedback1 + this.feedback2) * 0.5,
+      twoPi * this.modulatorPhase + fb * (this.feedback1 + this.feedback2) * 0.5,
     );
     this.feedback2 = this.feedback1;
     this.feedback1 = mod;
-    const index = note.modulationIndex * modulatorLevel(note, time);
-    const amplitude = note.level * carrierLevel(note, time);
-    const output = FastMath.sin(twoPi * this.carrierPhase + mod * index) * amplitude;
+    const index = Math.min(note.modulationIndex, 6) * modulatorLevel(note, time);
+    const out = FastMath.sin(twoPi * this.carrierPhase + mod * index) * env;
     this.carrierPhase = FastMath.frac(this.carrierPhase + increment);
     this.modulatorPhase = FastMath.frac(this.modulatorPhase + increment * note.modulatorRatio);
-    return output;
+    return out * 0.85;
+  }
+
+  renderKick(note, time, env) {
+    const scale = pitchScale(note, time);
+    // Body: sine with pitch sweep. Click: short noise burst.
+    const body = FastMath.sin(FastMath.TwoPi * this.carrierPhase) * env;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + this.increment * scale);
+    const click = time < 0.004 ? this.rand() * (1 - time / 0.004) * 0.35 : 0;
+    return body * 1.1 + click;
+  }
+
+  renderSnare(note, time, env) {
+    const scale = pitchScale(note, time);
+    const body = FastMath.sin(FastMath.TwoPi * this.carrierPhase) * env * 0.35;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + this.increment * scale * 1.6);
+    const noiseEnv = env * Math.exp(-time * 18);
+    const noise = this.rand() * noiseEnv;
+    return body + noise * 0.7;
+  }
+
+  renderHat(note, time, env) {
+    // Band-passed noise via crude highpass of white noise.
+    const n = this.rand();
+    const hp = n - this.noise;
+    this.noise = n;
+    const decay = Math.exp(-time * (28 + note.modulatorDecay * 40));
+    return hp * env * decay * 0.55;
+  }
+
+  renderBass(note, time, env) {
+    // Soft FM, mild overdrive via soft cubic.
+    const raw = this.renderFm(note, time, env);
+    const x = raw * 1.4;
+    return x - (x * x * x) / 3;
+  }
+
+  renderPad(note, time, env) {
+    // Detuned dual sine + quiet mod for warmth.
+    const scale = pitchScale(note, time);
+    const inc = this.increment * scale;
+    const twoPi = FastMath.TwoPi;
+    const a = FastMath.sin(twoPi * this.carrierPhase);
+    const b = FastMath.sin(twoPi * this.phase2);
+    this.carrierPhase = FastMath.frac(this.carrierPhase + inc);
+    this.phase2 = FastMath.frac(this.phase2 + inc * 1.0035);
+    const mod = FastMath.sin(twoPi * this.modulatorPhase) * Math.min(note.modulationIndex, 2) * 0.15;
+    this.modulatorPhase = FastMath.frac(this.modulatorPhase + inc * (note.modulatorRatio || 2));
+    return (a + b) * 0.45 * env * (1 + mod);
+  }
+
+  renderBell(note, time, env) {
+    // Inharmonic partials: 1 : 2.76 : 5.4-ish.
+    const scale = pitchScale(note, time);
+    const inc = this.increment * scale;
+    const twoPi = FastMath.TwoPi;
+    const a = FastMath.sin(twoPi * this.carrierPhase);
+    const b = FastMath.sin(twoPi * this.modulatorPhase) * 0.45 * modulatorLevel(note, time);
+    const c = FastMath.sin(twoPi * this.phase2) * 0.2 * env;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + inc);
+    this.modulatorPhase = FastMath.frac(this.modulatorPhase + inc * 2.76);
+    this.phase2 = FastMath.frac(this.phase2 + inc * 5.4);
+    return (a + b + c) * env * 0.7;
+  }
+
+  renderPluck(note, time, env) {
+    // Bright FM that collapses quickly to sine — guitar-ish attack.
+    const bright = Math.exp(-time * 14);
+    const scale = pitchScale(note, time);
+    const increment = this.increment * scale;
+    const twoPi = FastMath.TwoPi;
+    const mod = FastMath.sin(twoPi * this.modulatorPhase) * note.modulationIndex * bright;
+    const out = FastMath.sin(twoPi * this.carrierPhase + mod) * env;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + increment);
+    this.modulatorPhase = FastMath.frac(this.modulatorPhase + increment * note.modulatorRatio);
+    return out * 0.9;
   }
 }
 
@@ -415,9 +535,14 @@ class DelayBus {
   }
 }
 
+// Gentle soft-knee clip — only engages near the rails, so normal mix stays clean.
 function softClip(x) {
-  const s = Math.min(x * x, 9);
-  return Math.min(1, Math.max(-1, x * (27 + s) / (27 + 9 * s)));
+  const a = Math.abs(x);
+  if (a <= 0.7) return x;
+  // Smooth into ±1 without the harsh Pade that made dense chords crunchy.
+  const t = (a - 0.7) / 0.3;
+  const y = 0.7 + 0.3 * (t / (1 + t));
+  return x < 0 ? -y : y;
 }
 
 function clamp01(x) {
@@ -433,7 +558,8 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this.reverb = new ReverbBus(sampleRate);
     this.delay = new DelayBus(sampleRate);
     this.dspSample = 0;
-    this.masterGain = 0.85;
+    // Headroom: dense chords + sends used to slam the soft clip ("rinky dink").
+    this.masterGain = 0.42;
     this.fx = {
       reverbSize: 0.5,
       reverbDamp: 0.5,

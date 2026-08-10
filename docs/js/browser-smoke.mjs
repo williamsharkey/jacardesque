@@ -111,6 +111,8 @@ async function main() {
         audioReady: !!app?.audio?.ready,
         activeVoices: app?.audio?.status?.activeVoices ?? -1,
         queued: app?.audio?.status?.queuedNotes ?? -1,
+        sticky: false,
+        sketch: "",
       };
     });
 
@@ -151,6 +153,21 @@ async function main() {
       }
     });
 
+    // Sketch navigation (instant load)
+    const beforeTitle = await page.evaluate(() => document.querySelector(".sketch-label")?.textContent);
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll("button")].find((x) => x.textContent === "›");
+      b?.click();
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    const afterTitle = await page.evaluate(() => document.querySelector(".sketch-label")?.textContent);
+    if (!afterTitle) throw new Error("missing sketch label");
+    if (beforeTitle && afterTitle === beforeTitle) {
+      // still ok if only one sketch, but we seed 10
+      console.log("  note: sketch title did not change on ›");
+    }
+    const sticky = await page.evaluate(() => !!document.querySelector(".haiku-sticky:not(.hidden)"));
+
     // Stop
     await page.evaluate(() => {
       const b = [...document.querySelectorAll("button")].find((x) => x.textContent === "Stop");
@@ -160,6 +177,8 @@ async function main() {
       () => [...document.querySelectorAll("button")].some((b) => b.textContent === "Play"),
       { timeout: 3000 },
     );
+    status.sticky = sticky;
+    status.sketch = afterTitle;
 
     // --- Selftest page (audio worklet path) ---
     await page.goto(base + "/selftest.html", { waitUntil: "networkidle0", timeout: 15000 });
@@ -178,6 +197,7 @@ async function main() {
 
     console.log("browser-smoke: PASS");
     console.log("  app status:", status.text);
+    console.log("  sketch:", status.sketch, "sticky:", status.sticky);
     console.log("  selftest:", self.log.split("\n").filter(Boolean).slice(-6).join(" | "));
     if (errors.length) console.log("  page errors (non-fatal):", errors.slice(0, 5));
   } finally {

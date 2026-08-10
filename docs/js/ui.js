@@ -21,6 +21,7 @@ import {
   gpOffset,
 } from "./core.js";
 import { Style } from "./style.js";
+import { InstrumentNames, InstrumentKeys } from "./instruments.js";
 
 // ---------------------------------------------------------------------------
 // Value bar ranges
@@ -1101,6 +1102,7 @@ export class JacquardUI {
     this.editor.onChanged = () => this.onChanged();
     this.editor.onTouched = () => {
       this.view.paint();
+      this.app.scheduleSave();
     };
 
     this.right = el("div", "panel-column right");
@@ -1129,6 +1131,7 @@ export class JacquardUI {
       () => this.editor.project.tempo,
       (v) => {
         this.editor.project.tempo = v;
+        this.app.scheduleSave();
       });
     tempoRow.classList.add("tempo-row");
     this.tempoBar = tempoRow;
@@ -1141,45 +1144,62 @@ export class JacquardUI {
     }, 62);
     this.transport.append(this.sendBtn);
 
-    this._slots = this.app.store.slots();
-    this.fileChooser = chooser(
-      "File",
-      this._slots,
-      () => Math.max(0, this._slots.indexOf(this.app.store.name)),
-      (i) => {
-        this.app.store.name = this._slots[i];
-      },
-    );
-    this.transport.append(this.fileChooser);
-    this.transport.append(button("Save", () => {
-      this.message = this.app.save();
-      this._slots = this.app.store.slots();
-      this._rebuildFileChooser();
+    // Sketch browser: ‹ title ›  +  New  (auto-save; no Load/Save)
+    this.transport.append(el("div", "transport-sep"));
+    this.transport.append(button("‹", () => {
+      this.app.prevSketch();
       this.canvas.focus();
-    }, 46));
-    this.transport.append(button("Load", () => {
-      this.message = this.app.load();
-      this.onChanged();
+    }, 32));
+    this.sketchLabel = el("div", "sketch-label");
+    this.transport.append(this.sketchLabel);
+    this.transport.append(button("›", () => {
+      this.app.nextSketch();
       this.canvas.focus();
-    }, 46));
+    }, 32));
+    this.transport.append(button("+", () => {
+      this.app.duplicateSketch();
+      this.canvas.focus();
+    }, 32));
+    this.plusBtn = this.transport.lastChild;
+    this.plusBtn.title = "Duplicate sketch";
+    this.transport.append(button("New", () => {
+      this.app.newSketch();
+      this.canvas.focus();
+    }, 44));
 
     this.status = el("div", "status");
     this.transport.append(this.status);
     this._sendShown = false;
+
+    // Haiku sticky (reads project.meta)
+    this.sticky = el("div", "haiku-sticky hidden");
+    this.body.append(this.sticky);
+
+    this.onSketchMetaChanged();
   }
 
-  _rebuildFileChooser() {
-    // Replace the chooser in place so new slots appear after Save.
-    const old = this.fileChooser;
-    this.fileChooser = chooser(
-      "File",
-      this._slots,
-      () => Math.max(0, this._slots.indexOf(this.app.store.name)),
-      (i) => {
-        this.app.store.name = this._slots[i];
-      },
-    );
-    old.replaceWith(this.fileChooser);
+  onSketchMetaChanged() {
+    const p = this.app.project;
+    const title = this.app.store.displayName(p);
+    const n = this.app.store.listing();
+    if (this.sketchLabel) {
+      this.sketchLabel.textContent = title;
+      this.sketchLabel.title = this.app.store.name + " · " + n;
+    }
+    if (this.sticky) {
+      if (p.haiku) {
+        this.sticky.classList.remove("hidden");
+        const lines = p.haiku.split(/\s*\/\s*/);
+        this.sticky.innerHTML = "";
+        if (p.title) this.sticky.append(el("div", "sticky-title", p.title));
+        for (const line of lines) {
+          this.sticky.append(el("div", "sticky-line", line.trim()));
+        }
+      } else {
+        this.sticky.classList.add("hidden");
+        this.sticky.innerHTML = "";
+      }
+    }
   }
 
   onChanged() {
@@ -1188,6 +1208,8 @@ export class JacquardUI {
     this.view.rebuild();
     this.refreshPanels(true);
     this.buildSendPanel();
+    this.onSketchMetaChanged();
+    this.app.scheduleSave();
   }
 
   refreshPanels(force = false) {
@@ -1338,13 +1360,25 @@ export class JacquardUI {
     body.append(el("div", "caption", "Channel " + channel));
     body.append(el("div", "divider"));
     const patch = PatchBank.get(this.editor.project.patches, channel);
+    body.append(chooser(
+      "Instrument",
+      InstrumentNames,
+      () => Math.min(InstrumentNames.length - 1, Math.max(0, patch.instrument | 0)),
+      (i) => {
+        patch.instrument = i;
+        this.app.scheduleSave();
+      },
+    ));
     for (let t = 0; t < ParamTargets.Count; t++) {
       const target = t;
       body.append(barRow(
         ParamTargets.name(target),
         Ranges.ofParam(target),
         () => ParamTargets.get(patch, target),
-        (v) => ParamTargets.set(patch, target, v),
+        (v) => {
+          ParamTargets.set(patch, target, v);
+          this.app.scheduleSave();
+        },
         () => this.editor.preview(60, channel),
       ));
     }
@@ -1409,15 +1443,19 @@ export class JacquardUI {
     const body = el("div", "panel-body");
     panel.append(body);
     const fx = this.editor.project.fx;
+    const touchFx = () => this.app.scheduleSave();
     body.append(el("div", "caption", "Reverb"));
     body.append(barRow("Size", Ranges.amount(0, 1), () => fx.reverbSize, (v) => {
       fx.reverbSize = v;
+      touchFx();
     }));
     body.append(barRow("Damp", Ranges.amount(0, 1), () => fx.reverbDamp, (v) => {
       fx.reverbDamp = v;
+      touchFx();
     }));
     body.append(barRow("Width", Ranges.amount(0, 1), () => fx.reverbWidth, (v) => {
       fx.reverbWidth = v;
+      touchFx();
     }));
     body.append(el("div", "divider"));
     body.append(el("div", "caption", "Delay"));
@@ -1425,16 +1463,20 @@ export class JacquardUI {
       () => DelayTime.nearest(fx.delayBeats),
       (i) => {
         fx.delayBeats = DelayTime.Beats[i];
+        touchFx();
       }));
     body.append(barRow("Feedback", Ranges.amount(0, SendFx.MaxFeedback),
       () => fx.delayFeedback, (v) => {
         fx.delayFeedback = v;
+        touchFx();
       }));
     body.append(barRow("Tone", Ranges.amount(0, 1), () => fx.delayTone, (v) => {
       fx.delayTone = v;
+      touchFx();
     }));
     body.append(barRow("Spread", Ranges.amount(0, 1), () => fx.delaySpread, (v) => {
       fx.delaySpread = v;
+      touchFx();
     }));
     if (!shown && !this._sendShown) panel.classList.add("hidden");
   }
@@ -1446,9 +1488,11 @@ export class JacquardUI {
     this.playBtn.classList.toggle("active", playing);
     this.tempoBar.sync?.();
     const st = this.app.audio.status;
+    const listing = this.app.store.listing();
     this.status.textContent =
-      (this.message || "") +
-      (st ? ` · v${st.activeVoices} q${st.queuedNotes}` : "");
+      listing +
+      (this.app.message ? " · " + this.app.message : "") +
+      (st ? ` · v${st.activeVoices}` : "");
   }
 }
 

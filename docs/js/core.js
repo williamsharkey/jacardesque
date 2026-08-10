@@ -171,19 +171,20 @@ export const ParamTargets = {
 
 export function defaultPatch() {
   return {
-    level: 0.8,
+    instrument: 0, // 0=fm … see instruments.js
+    level: 0.5,
     pan: 0,
     gateScale: 1,
     modulatorRatio: 2,
-    modulationIndex: 3,
-    feedback: 0,
-    modulatorDecay: 0.12,
+    modulationIndex: 1.4,
+    feedback: 0.15,
+    modulatorDecay: 0.14,
     carrierAttack: 0.005,
-    carrierRelease: 0.12,
+    carrierRelease: 0.16,
     pitchSweep: 0,
     pitchDecay: 0.05,
-    reverbSend: 0,
-    delaySend: 0,
+    reverbSend: 0.1,
+    delaySend: 0.05,
   };
 }
 
@@ -338,11 +339,13 @@ export function noteEventFromPatch(patch, midiNote, gateSeconds, startSample) {
   const pan = Math.min(1, Math.max(-1, patch.pan));
   return {
     startSample: startSample | 0,
+    midi: midiNote | 0,
     frequency: Pitch.toFrequency(midiNote),
     level,
     pan,
-    duration: Math.max(gateSeconds * patch.gateScale, 0.005),
+    duration: Math.max(gateSeconds * (patch.gateScale ?? 1), 0.005),
     priority: Math.round(level * 8),
+    instrument: patch.instrument | 0,
     modulatorRatio: patch.modulatorRatio,
     modulationIndex: patch.modulationIndex,
     feedback: patch.feedback,
@@ -351,8 +354,8 @@ export function noteEventFromPatch(patch, midiNote, gateSeconds, startSample) {
     carrierRelease: patch.carrierRelease,
     pitchSweep: patch.pitchSweep,
     pitchDecay: patch.pitchDecay,
-    reverbSend: patch.reverbSend,
-    delaySend: patch.delaySend,
+    reverbSend: Math.min(1, Math.max(0, patch.reverbSend ?? 0)),
+    delaySend: Math.min(1, Math.max(0, patch.delaySend ?? 0)),
   };
 }
 
@@ -962,6 +965,8 @@ export class Project {
     this.fx = defaultSendFx();
     this.score = new Score();
     this.patches = PatchBank.create();
+    this.title = "";
+    this.haiku = ""; // three lines separated by " / "
   }
 
   static createEmpty() {
@@ -1027,7 +1032,8 @@ function n(name) {
 // ---------------------------------------------------------------------------
 
 export const ProjectFormat = {
-  Version: 8,
+  // v9: instrument= on patches, meta title/haiku for sticky notes.
+  Version: 9,
   Extension: ".jacquard",
 
   write(project) {
@@ -1035,6 +1041,12 @@ export const ProjectFormat = {
     lines.push("jacquard " + this.Version);
     lines.push("tempo " + F(project.tempo));
     lines.push("meter " + project.beatsPerBar + " " + project.beatUnit);
+    if (project.title) {
+      lines.push("meta title " + String(project.title).replace(/\s+/g, " ").trim());
+    }
+    if (project.haiku) {
+      lines.push("meta haiku " + String(project.haiku).replace(/\s+/g, " ").trim());
+    }
     lines.push("fx " + writeFx(project.fx));
     for (let ch = 1; ch <= PatchBank.Channels; ch++) {
       lines.push("patch " + ch + " " + writePatch(PatchBank.get(project.patches, ch)));
@@ -1069,6 +1081,13 @@ export const ProjectFormat = {
           project.beatsPerBar = readInt(arg(tokens, 1, number));
           project.beatUnit = readInt(arg(tokens, 2, number));
           break;
+        case "meta": {
+          const key = arg(tokens, 1, number);
+          const rest = tokens.slice(2).join(" ");
+          if (key === "title") project.title = rest;
+          else if (key === "haiku") project.haiku = rest;
+          break;
+        }
         case "fx":
           readFx(project.fx, tokens);
           break;
@@ -1138,7 +1157,10 @@ function writeLock(tile) {
 }
 
 function writePatch(p) {
-  return "level=" + F(p.level) +
+  const inst = p.instrument | 0;
+  const names = ["fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck"];
+  return "instrument=" + (names[inst] || "fm") +
+    " level=" + F(p.level) +
     " pan=" + F(p.pan) +
     " gate=" + F(p.gateScale) +
     " mratio=" + F(p.modulatorRatio) +
@@ -1255,6 +1277,12 @@ function readPatchLine(project, tokens) {
 function readPatch(patch, tokens, from) {
   for (let i = from; i < tokens.length; i++) {
     const [key, text] = split(tokens[i]);
+    if (key === "instrument") {
+      const names = ["fm", "kick", "snare", "hat", "bass", "pad", "bell", "pluck"];
+      const idx = names.indexOf(String(text).toLowerCase());
+      patch.instrument = idx >= 0 ? idx : (readInt(text) || 0);
+      continue;
+    }
     const value = readFloat(text);
     switch (key) {
       case "level": patch.level = value; break;

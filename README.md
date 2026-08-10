@@ -22,15 +22,29 @@ Play the demo
 
 Click **Play** (or press Space). Browsers require a gesture before audio starts.
 
-The web app is a no-compromise port of the prototype’s behaviour:
+The web app ports the sequencer fully, then extends the sound engine for the browser:
 
 - Sample-accurate scheduling on the audio clock (`AudioWorklet`)
-- Two-operator FM voice pool with voice stealing (same maths as the Unity core)
-- Freeverb reverb + tempo-locked delay with rate-limited tap (same buses)
+- **Multi-timbre worklet** (FM, kick, snare, hat, bass, pad, bell, pluck) with cleaner headroom
+- Freeverb reverb + tempo-locked delay with rate-limited tap
 - Full plane editor: lanes anywhere, stacks, gates, locks, jumps / JDST
-- Parameter locks (absolute / relative) on every patch field including pan & sends
-- Sound / Lock / Send FX panels, value bars, file slots in `localStorage`
-- Same text score format (`.jacquard` v8)
+- Parameter locks on every patch field including pan & sends
+- **Auto-save sketches** — `‹ ›` switches instantly, `+` duplicates, **New** blanks; no Load/Save
+- **Ten factory haiku sketches** with sticky notes on the plane
+- Score format `.jacquard` v9 (`instrument=`, `meta title` / `meta haiku`)
+
+### Sound engine choices (research)
+
+| Option | License | Notes |
+| --- | --- | --- |
+| **This worklet (shipped)** | same as fork | Offline-first, sample-accurate, locks still apply; multi-algorithm DSP |
+| [SpessaSynth](https://github.com/spessasus/SpessaSynth) | Apache-2.0 | Excellent SF2/DLS player; heavy SoundFont assets |
+| [smplr](https://github.com/danigb/smplr) | MIT | Easy GM soundfonts over the network |
+| FluidSynth → WASM | LGPL | Studio-grade SF2; license + bundle size cost |
+| Dexed (DX7) | **GPL** | Great FM; GPL is a poor fit for a permissive fork |
+| Tone.js | MIT | Convenient graph API; less ideal for sample-accurate sequencer clocks |
+
+We keep a **self-contained AudioWorklet** so GitHub Pages stays zero-dependency and offline. SF2 (SpessaSynth / smplr) remains the best path if we later want sampled orchestras without rewriting the plane editor.
 
 The original static look mockup is still at
 [docs/mockup.html](docs/mockup.html) (also linked from the live site).

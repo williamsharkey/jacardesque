@@ -308,6 +308,78 @@ button.lock-label:hover {
   color: var(--marker);
 }
 
+.transport-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--panel-line);
+  margin: 0 4px;
+}
+
+.sketch-label {
+  min-width: 110px;
+  max-width: 180px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--note-text);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Haiku sticky note — upper left of the plane */
+.haiku-sticky {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 5;
+  width: 200px;
+  padding: 14px 14px 16px;
+  background: #f4e7b0;
+  color: #2a2410;
+  border-radius: 2px 2px 4px 2px;
+  box-shadow:
+    2px 3px 0 rgba(0, 0, 0, 0.18),
+    0 8px 20px rgba(0, 0, 0, 0.25);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 13px;
+  line-height: 1.45;
+  transform: rotate(-1.5deg);
+  pointer-events: none;
+}
+
+.haiku-sticky.hidden {
+  display: none;
+}
+
+.haiku-sticky .sticky-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  opacity: 0.7;
+  font-family: system-ui, sans-serif;
+}
+
+.haiku-sticky .sticky-line {
+  margin: 0 0 2px;
+}
+
+.haiku-sticky::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 48px;
+  height: 14px;
+  margin-left: -24px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  transform: rotate(-2deg);
+}
+
 @media (max-width: 720px) {
   .panel {
     width: 180px;
