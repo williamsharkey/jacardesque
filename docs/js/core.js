@@ -1797,6 +1797,8 @@ function writeFxWorld(lines, score) {
       s += " channel=" + (t.channel | 0) +
         " param=" + t.paramKey +
         " value=" + F(t.value);
+    } else if (t.kind === "pat+" || t.kind === "pat-") {
+      // no extra fields
     } else {
       if (t.targetFxId) s += " target=" + t.targetFxId;
       if (t.kind === "param") {

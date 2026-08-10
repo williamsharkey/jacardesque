@@ -129,9 +129,10 @@ export function patternOpOf(mod) {
 
 /**
  * Trigger pad on free ground (not on a lane cell).
- * kind: "on" | "off" | "param" | "chan"
+ * kind: "on" | "off" | "param" | "chan" | "pat+" | "pat-"
  *   on/off/param → FX insert
  *   chan → instrument patch param for a channel
+ *   pat+/pat- → pattern bank step (adjacency fire)
  * Fires when orthogonally adjacent to a playhead-lit step cell.
  */
 export function createFxTrigger({
@@ -144,17 +145,63 @@ export function createFxTrigger({
   value = 0,
   id = null,
 }) {
-  const k = (kind === "off" || kind === "param" || kind === "chan") ? kind : "on";
+  const allowed = ["on", "off", "param", "chan", "pat+", "pat-"];
+  const k = allowed.includes(kind) ? kind : "on";
+  const isPat = k === "pat+" || k === "pat-";
+  const isChan = k === "chan";
+  const isValue = k === "param" || isChan;
   return {
     id: id || newFxId("tr"),
     x: x | 0,
     y: y | 0,
     kind: k,
-    targetFxId: k === "chan" ? null : targetFxId,
-    channel: k === "chan" ? Math.max(1, channel | 0) : 0,
-    paramKey: (k === "param" || k === "chan") ? String(paramKey || (k === "chan" ? "level" : "mix")) : null,
-    value: (k === "param" || k === "chan") ? +value || 0 : 0,
+    targetFxId: (isChan || isPat) ? null : targetFxId,
+    channel: isChan ? Math.max(1, channel | 0) : 0,
+    paramKey: isValue ? String(paramKey || (isChan ? "level" : "mix")) : null,
+    value: isValue ? +value || 0 : 0,
   };
+}
+
+/** Short owner label for chip face, e.g. DLY, PL, PAT. */
+export function triggerOwnerLabel(score, trig) {
+  ensureFxLists(score);
+  if (trig.kind === "pat+" || trig.kind === "pat-") return "PAT";
+  if (trig.kind === "chan") {
+    for (const lane of score.lanes || []) {
+      const ch = lane.channel;
+      if (ch && (ch.channel | 0) === (trig.channel | 0)) {
+        return (ch.shortName || ch.label || ("C" + ch.channel)).slice(0, 3).toUpperCase();
+      }
+    }
+    return ("C" + (trig.channel | 0)).slice(0, 3);
+  }
+  const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
+  if (!mod) return "?";
+  return (FxTypes[mod.type]?.label || mod.type || "?").slice(0, 3);
+}
+
+/** Primary action label on chip (ON, OFF, .5, P+, …). */
+export function triggerActionLabel(trig) {
+  if (trig.kind === "on") return "ON";
+  if (trig.kind === "off") return "OFF";
+  if (trig.kind === "pat+") return "P+";
+  if (trig.kind === "pat-") return "P−";
+  if (trig.kind === "param" || trig.kind === "chan") {
+    // Inline compact format (formatAutoShort is defined later in module)
+    const v = trig.value;
+    const key = trig.paramKey;
+    if (key === "pan") {
+      const a = Math.round(Math.min(1, Math.max(-1, v)) * 100);
+      if (a === 0) return "C";
+      return (a < 0 ? "L" : "R") + Math.abs(a);
+    }
+    if (v >= 0 && v <= 1) {
+      const s = Number(v).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+      return s.startsWith("0") ? s.slice(1) || "0" : s;
+    }
+    return String(Math.round(v * 100) / 100);
+  }
+  return "?";
 }
 
 export function fxOccupies(mod, point) {
@@ -289,6 +336,12 @@ export function formatAutoShort(paramKey, value) {
 
 export function formatAutoLong(score, trig) {
   ensureFxLists(score);
+  if (trig.kind === "pat+") {
+    return "Pattern + · adjacent lit step → next sketch in bank";
+  }
+  if (trig.kind === "pat-") {
+    return "Pattern − · adjacent lit step → previous sketch in bank";
+  }
   if (trig.kind === "chan") {
     const pDef = autoParamDef(score, trig);
     const label = pDef?.label || trig.paramKey;
@@ -297,8 +350,8 @@ export function formatAutoLong(score, trig) {
         trig.paramKey === "carrelease" || trig.paramKey === "pitchdecay") {
       v = Math.round(trig.value * 1000) + "ms";
     }
-    return "Ch " + (trig.channel | 0) + " · " + label + " = " + v +
-      "  (adjacent step → set instrument param)";
+    return "Ch " + (trig.channel | 0) + " (" + triggerOwnerLabel(score, trig) +
+      ") · " + label + " = " + v + "  (adjacent step → set instrument param)";
   }
   const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
   const fxName = mod ? (FxTypes[mod.type]?.name || mod.type) : "?";
@@ -385,6 +438,9 @@ export function applyFxTriggers(score, runners, playing, latch = null, fired = n
     const fireKey = cells.map((c) => c.x + "," + c.y).sort().join("|");
     if (fired && fired.get(trig.id) === fireKey) continue;
     if (fired) fired.set(trig.id, fireKey);
+
+    // Pattern bank triggers are handled in collectPatternTriggers
+    if (trig.kind === "pat+" || trig.kind === "pat-") continue;
 
     if (trig.kind === "chan") {
       if (!patches || !trig.paramKey) continue;
@@ -510,8 +566,10 @@ export function collectPatternTriggers(score, runners, lastFired) {
   ensureFxLists(score);
   const triggers = [];
   if (!runners?.length) return triggers;
-  const cols = activePlayheadColumns(runners);
+  const cells = playheadCells(runners);
+  const cols = new Set(cells.map((c) => c.x));
 
+  // Legacy: pattern modules on the plane (column hit). Prefer adjacency chips.
   for (const mod of score.fxModules) {
     const op = patternOpOf(mod);
     if (!op) continue;
@@ -531,6 +589,24 @@ export function collectPatternTriggers(score, runners, lastFired) {
       n: Math.round(mod.params?.n ?? 0),
       id: mod.id,
       key,
+    });
+  }
+
+  // New: pat+ / pat- adjacency triggers (dragged from transport ‹ ›)
+  for (const trig of score.fxTriggers) {
+    if (trig.kind !== "pat+" && trig.kind !== "pat-") continue;
+    if (!triggerAdjacentToPlayhead(trig, cells)) {
+      if (lastFired) lastFired.delete(trig.id);
+      continue;
+    }
+    const fireKey = cells.map((c) => c.x + "," + c.y).sort().join("|");
+    if (lastFired && lastFired.get(trig.id) === fireKey) continue;
+    if (lastFired) lastFired.set(trig.id, fireKey);
+    triggers.push({
+      op: trig.kind === "pat+" ? "inc" : "dec",
+      n: 0,
+      id: trig.id,
+      key: fireKey,
     });
   }
   return triggers;

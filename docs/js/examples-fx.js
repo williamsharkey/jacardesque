@@ -1,5 +1,5 @@
 // Ten showcase compositions — each demonstrates a feature cluster:
-// adjacency ON/OFF, FX/channel param chips, freeform lanes, gates, META, multi-channel.
+// adjacency ON/OFF, FX/channel param chips, freeform lanes, gates, pattern chips, multi-channel.
 
 import {
   Project,
@@ -279,13 +279,12 @@ function branchRiverFixed() {
 }
 
 // ---------------------------------------------------------------------------
-// 9. Pattern carousel — META P+/P→ with a short phrase bank
+// 9. Pattern carousel — P+/P− adjacency chips (from transport ‹ › drag)
 // ---------------------------------------------------------------------------
 function patternCarousel() {
-  // Single sketch that uses pattern modules; user switches via P+ on the grid.
   const p = base({
     title: "Pattern carousel",
-    haiku: "P+ steps the sketch bank / transport never rewinds / phrase becomes a map",
+    haiku: "Drag ‹ › onto the grid / chips step the sketch bank / transport never rewinds",
     tempo: 120,
   });
   setPatch(p, 1, "kick");
@@ -298,11 +297,13 @@ function patternCarousel() {
   fill(pl, 2, new NoteTile(N("G4"), 1));
   fill(pl, 4, new NoteTile(N("A4"), 1));
   fill(pl, 6, new NoteTile(N("B4"), 1));
-  // Pattern + / − modules (fire on column hit)
-  addPedal(p, "pat+", 10, 1, {}, false);
-  addPedal(p, "pat-", 12, 1, {}, false);
-  const go = addPedal(p, "patgo", 14, 1, { n: 0 }, false);
-  go.params.n = 2; // jump toward 3rd pattern when hit
+  // Pattern + at end of bar, Pattern − mid — adjacency chips (not grid pedals)
+  p.score.fxTriggers.push(createFxTrigger({
+    x: 8, y: 2, kind: "pat+",
+  }));
+  p.score.fxTriggers.push(createFxTrigger({
+    x: 4, y: 2, kind: "pat-",
+  }));
   const rvb = addPedal(p, "reverb", 10, 5, { mix: 0.35, size: 0.5, damp: 0.4 }, true);
   return p;
 }

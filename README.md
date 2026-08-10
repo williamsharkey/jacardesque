@@ -63,11 +63,11 @@ Click empty ground:
 | Direction | Result |
 | --- | --- |
 | Left / up / right | **Create lane** — path follows the drag (mode locks once started) |
-| Down one row | **Create object** — FX pedals & META pattern objects |
+| Down one row | **Create object** — FX pedals (delay, reverb, …) |
 
 ### Multi-pattern clock
 - Sketch bank with auto-save (`‹ ›` switch, `+` duplicate, **New**)
-- **META** grid objects: `P+` / `P−` / `P→n` step or jump patterns without rewinding the global beat
+- **Pattern ± chips**: drag transport `‹` / `›` onto the grid (beside a step). Click still steps the bank. Adjacency fire changes pattern without rewinding the global beat.
 
 ---
 
@@ -87,7 +87,7 @@ Click empty ground:
 | Automate FX param | Scrub pedal slider → drag value off onto a cell **beside** a step |
 | Automate instrument | Select **CHAN** → Sound panel → drag bar off onto grid |
 | Engage insert mid-phrase | Drag green **ON** beside start step; **OFF** beside end step |
-| Pattern arrange | Place **P+** / **P−** / **P→** META modules so the playhead column hits them |
+| Pattern ± on grid | Drag transport **‹** / **›** onto empty ground beside a step |
 | Remove | Delete key / panel Delete |
 | Cancel | **Esc** |
 
@@ -111,7 +111,7 @@ Full walkthrough: **[docs/MANUAL.md](docs/MANUAL.md)**.
 | **Metric tape** | Multi-lane groove + delay time on beats |
 | **Filter wound** | Filter cutoff chips + distort burst |
 | **Branch river** | JUMP/JDST, locks, delay on branch |
-| **Pattern carousel** | META P+ / P− / P→ + reverb |
+| **Pattern carousel** | Adjacency P+/P− chips + reverb |
 | **Tape loop garden** | Freeform path, dual delays, channel level chips |
 
 ### Haiku set

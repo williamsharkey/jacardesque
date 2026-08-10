@@ -57,8 +57,8 @@ export function buildLaneCategories(centreNote = 60) {
 }
 
 /**
- * Empty-ground object menu (no LANE — lanes are drawn by L/U/R drag).
- * Used when the pointer commits downward into the object shell.
+ * Empty-ground object menu: audio FX only (no LANE — lanes are L/U/R drag).
+ * Pattern +/− chips: drag transport ‹ › onto the grid.
  */
 export function buildGroundObjectCategories() {
   return [
@@ -73,30 +73,12 @@ export function buildGroundObjectCategories() {
         { label: "PAN", place: { kind: "FX", fxType: "pan" } },
       ],
     },
-    {
-      id: "meta",
-      label: "META",
-      items: metaItems(),
-    },
   ];
 }
 
 /** @deprecated */
 export function buildGroundCategories() {
   return buildGroundObjectCategories();
-}
-
-function metaItems() {
-  return [
-    { label: "PAT +", place: { kind: "FX", fxType: "pat+" } },
-    { label: "PAT −", place: { kind: "FX", fxType: "pat-" } },
-    { label: "PAT →1", place: { kind: "FX", fxType: "patgo", n: 0 } },
-    { label: "PAT →2", place: { kind: "FX", fxType: "patgo", n: 1 } },
-    { label: "PAT →3", place: { kind: "FX", fxType: "patgo", n: 2 } },
-    { label: "PAT →4", place: { kind: "FX", fxType: "patgo", n: 3 } },
-    { label: "PAT →5", place: { kind: "FX", fxType: "patgo", n: 4 } },
-    { label: "PAT →6", place: { kind: "FX", fxType: "patgo", n: 5 } },
-  ];
 }
 
 /** @deprecated use buildLaneCategories */

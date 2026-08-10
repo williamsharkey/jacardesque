@@ -34,6 +34,8 @@ import {
   formatAutoShort,
   formatAutoLong,
   triggerAdjacentToAnyLane,
+  triggerOwnerLabel,
+  triggerActionLabel,
 } from "./fx-model.js";
 
 // ---------------------------------------------------------------------------
@@ -1121,18 +1123,24 @@ export class ScoreView {
     const ox = g.origin.x;
     const menuY = g.origin.y + 1;
     const cats = g.cats;
-    // Category row at menuY: two cells around ox (FX leftish, META rightish)
-    // Horizontal: relative to ox → cat index
+    const multi = cats.length > 1;
     const relX = point.x - ox;
     if (point.y <= g.origin.y) {
       // Still on origin row or above → dismiss band
       g.itemIndex = -1;
-      g.catIndex = Math.min(cats.length - 1, Math.max(0, relX <= 0 ? 0 : 1));
+      if (multi) {
+        g.catIndex = Math.min(cats.length - 1, Math.max(0, relX <= 0 ? 0 : 1));
+      } else {
+        g.catIndex = 0;
+      }
       return;
     }
-    // Category from horizontal offset
-    let cat = relX <= 0 ? 0 : 1;
-    cat = Math.min(cats.length - 1, Math.max(0, cat));
+    // Single category always uses center column; multi uses left/right of origin
+    let cat = 0;
+    if (multi) {
+      cat = relX <= 0 ? 0 : 1;
+      cat = Math.min(cats.length - 1, Math.max(0, cat));
+    }
     g.catIndex = cat;
     // Items start at menuY + 1 (two rows below origin)
     const itemRow = point.y - (menuY + 1);
@@ -1347,15 +1355,16 @@ export class ScoreView {
       ctx.fillText("release → new lane (" + g.path.length + " steps)", lr.x, lr.y + lr.h + 4);
     }
 
-    // Create-object shell: centered one row below origin
+    // Create-object shell: one row below origin (FX only — pattern chips from transport)
     if (g.phase === "shell" || g.phase === "object") {
       const menuY = o.y + 1;
       const cats = g.cats;
-      // Category band spans roughly 3 cells centered under origin
+      const multi = cats.length > 1;
+
+      // Category band: single cat centered under origin; multi cats left/right of center
       for (let i = 0; i < cats.length; i++) {
-        const cx = o.x + (i === 0 ? -1 : 1);
+        const cx = multi ? (o.x + (i === 0 ? -1 : 1)) : o.x;
         const p = this.score.wrap(gp(cx, menuY));
-        // For single-cell center option when 2 cats: also paint middle
         const r = Style.cellRect(p);
         const catHot = g.phase === "object" && g.catIndex === i;
         ctx.globalAlpha = shellAlpha;
@@ -1377,8 +1386,8 @@ export class ScoreView {
         }
         ctx.globalAlpha = 1;
       }
-      // Center cell under origin: "create object" label in shell phase
-      {
+      // Multi-cat: center cell under origin is "create object" guide
+      if (multi) {
         const p = this.score.wrap(gp(o.x, menuY));
         const r = Style.cellRect(p);
         ctx.globalAlpha = shellAlpha;
@@ -1401,7 +1410,7 @@ export class ScoreView {
       // Object items cascade below category row when in object phase
       if (g.phase === "object") {
         const cat = cats[g.catIndex];
-        const colX = o.x + (g.catIndex === 0 ? -1 : 1);
+        const colX = multi ? (o.x + (g.catIndex === 0 ? -1 : 1)) : o.x;
         for (let i = 0; i < cat.items.length; i++) {
           const p = this.score.wrap(gp(colX, menuY + 1 + i));
           const r = Style.cellRect(p);
@@ -1635,29 +1644,22 @@ export class ScoreView {
     ctx.globalAlpha = alpha;
 
     let fill = "#a3a3a3";
-    let label = "?";
-    if (trig.kind === "on") {
-      fill = firing ? "#86efac" : "#4ade80";
-      label = "ON";
-    } else if (trig.kind === "off") {
-      fill = firing ? "#fca5a5" : "#f87171";
-      label = "OFF";
-    } else if (trig.kind === "chan") {
-      // Cyan: instrument / channel param
-      fill = firing ? "#a5f3fc" : "#22d3ee";
-      label = formatAutoShort(trig.paramKey, trig.value);
-    } else {
-      // Gold: FX param
-      fill = firing ? "#fde68a" : "#fbbf24";
-      label = formatAutoShort(trig.paramKey, trig.value);
-    }
+    if (trig.kind === "on") fill = firing ? "#86efac" : "#4ade80";
+    else if (trig.kind === "off") fill = firing ? "#fca5a5" : "#f87171";
+    else if (trig.kind === "chan") fill = firing ? "#a5f3fc" : "#22d3ee";
+    else if (trig.kind === "pat+" || trig.kind === "pat-") {
+      fill = firing ? "#c4b5fd" : "#a78bfa";
+    } else fill = firing ? "#fde68a" : "#fbbf24";
+
+    const action = triggerActionLabel(trig);
+    const owner = triggerOwnerLabel(this.score, trig);
 
     if (firing) {
       ctx.shadowColor = fill;
       ctx.shadowBlur = 10 + 6 * pulse;
     }
     const r = Style.cellRect(trig);
-    roundRect(ctx, r.x + 3, r.y + 5, r.w - 6, r.h - 10, 4);
+    roundRect(ctx, r.x + 2, r.y + 3, r.w - 4, r.h - 6, 4);
     ctx.fillStyle = fill;
     ctx.fill();
     ctx.strokeStyle = selected ? "#fff" : withAlpha("#000", 0.35);
@@ -1665,11 +1667,15 @@ export class ScoreView {
     ctx.stroke();
     ctx.shadowBlur = 0;
 
+    // Two-line label: action (ON / .5 / P+) + owner (DLY / HH / PAT)
     ctx.fillStyle = "#1c1917";
-    ctx.font = "700 " + (label.length > 3 ? "8" : "9") + "px system-ui,sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, cx, cy);
+    ctx.font = "700 8px system-ui,sans-serif";
+    ctx.fillText(action, cx, cy - 5);
+    ctx.font = "600 7px system-ui,sans-serif";
+    ctx.fillStyle = withAlpha("#1c1917", 0.75);
+    ctx.fillText(owner, cx, cy + 6);
     ctx.restore();
   }
 
@@ -2906,18 +2912,18 @@ export class JacquardUI {
     this.tempoBar = tempoRow;
     this.transport.append(tempoRow);
 
-    // Sketch browser: ‹ title ›  +  New  (auto-save; no Load/Save)
+    // Sketch browser: ‹ title › — click steps sketches; drag onto grid = P− / P+ triggers
     this.transport.append(el("div", "transport-sep"));
-    this.transport.append(button("‹", () => {
-      this.app.prevSketch();
-      this.canvas.focus();
-    }, 32));
+    this.prevSketchBtn = button("‹", () => {}, 32);
+    this.prevSketchBtn.title = "Click: previous sketch · Drag onto grid: Pattern − trigger";
+    this.transport.append(this.prevSketchBtn);
     this.sketchLabel = el("div", "sketch-label");
     this.transport.append(this.sketchLabel);
-    this.transport.append(button("›", () => {
-      this.app.nextSketch();
-      this.canvas.focus();
-    }, 32));
+    this.nextSketchBtn = button("›", () => {}, 32);
+    this.nextSketchBtn.title = "Click: next sketch · Drag onto grid: Pattern + trigger";
+    this.transport.append(this.nextSketchBtn);
+    this._bindPatternNavDrag(this.prevSketchBtn, "pat-", () => this.app.prevSketch());
+    this._bindPatternNavDrag(this.nextSketchBtn, "pat+", () => this.app.nextSketch());
     this.transport.append(button("+", () => {
       this.app.duplicateSketch();
       this.canvas.focus();
@@ -2937,6 +2943,59 @@ export class JacquardUI {
     this.body.append(this.sticky);
 
     this.onSketchMetaChanged();
+  }
+
+  /**
+   * Click = change sketch. Drag onto empty grid = place pat+/pat− adjacency trigger.
+   */
+  _bindPatternNavDrag(btn, kind, onClick) {
+    btn.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      btn.setPointerCapture(e.pointerId);
+      const origin = { x: e.clientX, y: e.clientY };
+      let armed = false;
+      let ghost = null;
+
+      const move = (ev) => {
+        const dist = Math.hypot(ev.clientX - origin.x, ev.clientY - origin.y);
+        if (!armed && dist > 8) {
+          armed = true;
+          ghost = el("div", "dock-note-ghost", kind === "pat+" ? "P+" : "P−");
+          ghost.style.background = "#a78bfa";
+          document.body.append(ghost);
+        }
+        if (ghost) {
+          ghost.style.left = ev.clientX + 8 + "px";
+          ghost.style.top = ev.clientY + 8 + "px";
+          const point = Style.cellAt(this.view.localPoint(ev));
+          const valid = this.editor.isValidTriggerCell(point);
+          ghost.classList.toggle("valid", !!valid);
+          ghost.style.opacity = valid ? "1" : "0.5";
+        }
+      };
+
+      const up = (ev) => {
+        try { btn.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+        btn.removeEventListener("pointermove", move);
+        btn.removeEventListener("pointerup", up);
+        btn.removeEventListener("pointercancel", up);
+        if (ghost) ghost.remove();
+        if (armed) {
+          const point = Style.cellAt(this.view.localPoint(ev));
+          if (this.editor.isValidTriggerCell(point)) {
+            this.editor.placeTrigger({ kind, point });
+          }
+        } else {
+          onClick();
+        }
+        this.canvas.focus();
+      };
+
+      btn.addEventListener("pointermove", move);
+      btn.addEventListener("pointerup", up);
+      btn.addEventListener("pointercancel", up);
+    });
   }
 
   onSketchMetaChanged() {
@@ -3171,7 +3230,9 @@ export class JacquardUI {
     const title = trig.kind === "on" ? "ON trigger"
       : trig.kind === "off" ? "OFF trigger"
         : trig.kind === "chan" ? "Instrument param"
-          : "FX param";
+          : trig.kind === "pat+" ? "Pattern +"
+            : trig.kind === "pat-" ? "Pattern −"
+              : "FX param";
     panel.append(el("div", "panel-title", title));
     const body = el("div", "panel-body");
     panel.append(body);
@@ -3182,6 +3243,12 @@ export class JacquardUI {
       near
         ? "Adjacent to a lane — opacity 1; fires when a neighbor step lights."
         : "Not next to a lane (opacity 0.5) — move beside a step cell."));
+
+    if (trig.kind === "pat+" || trig.kind === "pat-") {
+      body.append(el("div", "caption",
+        "Create these by dragging transport ‹ / › onto the grid. " +
+        "Click ‹ › (no drag) still steps the sketch bank immediately."));
+    }
 
     if (trig.kind === "param" || trig.kind === "chan") {
       const pDef = autoParamDef(score, trig);
@@ -3208,7 +3275,7 @@ export class JacquardUI {
 
     if (trig.kind === "chan") {
       body.append(el("div", "caption", "Channel " + (trig.channel | 0) + " instrument"));
-    } else {
+    } else if (trig.kind !== "pat+" && trig.kind !== "pat-") {
       body.append(el("div", "caption",
         "Target: " + (fxDef ? fxDef.name : "?") +
         (mod ? (mod.on ? " · insert ON" : " · insert off") : "")));

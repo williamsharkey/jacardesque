@@ -9,6 +9,8 @@ import {
   buildFxGraphMessage,
   ensureFxLists,
   collectPatternTriggers,
+  playheadCells,
+  isAdjacent,
 } from "./fx-model.js";
 
 const LOOKAHEAD = 0.12;
@@ -201,31 +203,37 @@ class App {
   _handlePatternModules() {
     if (!this.sequencer.isPlaying || this._switching) return;
     ensureFxLists(this.project.score);
-    // Clear debounce for modules no longer under playhead
     const triggers = collectPatternTriggers(
       this.project.score,
       this.sequencer.runners,
       this._patternFire,
     );
-    // Prune stale debounce keys when columns move
+    // Prune stale debounce keys when no longer hot
     const live = new Set(triggers.map((t) => t.id));
+    const cells = playheadCells(this.sequencer.runners);
     for (const id of [...this._patternFire.keys()]) {
-      if (!live.has(id)) {
-        // Keep until column changes — collectPatternTriggers sets key only on fire.
-        // Drop entries for modules that didn't hit this frame so re-entry can fire.
-        let still = false;
-        for (const r of this.sequencer.runners) {
-          if (r.playingLane == null || r.playingStep < 0) continue;
-          const lane = r.playingLane;
-          lane.ensurePath?.();
-          const pt = lane.cellPoint?.(r.playingStep, 0);
-          const col = pt ? pt.x : lane.x + r.playingStep;
-          const mod = this.project.score.fxModules.find((m) => m.id === id);
-          if (!mod) continue;
-          if (col >= mod.x && col < mod.x + mod.w) still = true;
+      if (live.has(id)) continue;
+      let still = false;
+      const mod = this.project.score.fxModules.find((m) => m.id === id);
+      if (mod) {
+        for (const c of cells) {
+          if (c.x >= mod.x && c.x < mod.x + mod.w) {
+            still = true;
+            break;
+          }
         }
-        if (!still) this._patternFire.delete(id);
+      } else {
+        const trig = this.project.score.fxTriggers.find((t) => t.id === id);
+        if (trig) {
+          for (const c of cells) {
+            if (isAdjacent(trig.x, trig.y, c.x, c.y)) {
+              still = true;
+              break;
+            }
+          }
+        }
       }
+      if (!still) this._patternFire.delete(id);
     }
 
     for (const t of triggers) {

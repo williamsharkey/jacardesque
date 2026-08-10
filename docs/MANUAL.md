@@ -40,7 +40,7 @@ Click an **empty cell** (not on a lane). A grid-native shell appears:
 | Zone | Gesture |
 | --- | --- |
 | **Left / above / right** of the cell | Drag that way → **draw a new lane** (path follows the pointer; stays in lane mode even if you later go down) |
-| **One row below** the cell | Drag down → **create object** menu (FX pedals, META pattern objects) |
+| **One row below** the cell | Drag down → **create object** menu (FX pedals only) |
 
 Release on an item to place it. Click without leaving the cell to dismiss.
 
@@ -57,11 +57,11 @@ Prefer notes from the **bottom keyboard** (drag a key onto a step).
 | --- | --- |
 | Play / Stop | Transport |
 | bpm bar | Tempo (drag) |
-| ‹ title › | Previous / next sketch |
+| ‹ title › | Click: previous / next sketch. **Drag** ‹ / › onto the grid → place Pattern − / Pattern + adjacency chips |
 | + | Duplicate current sketch |
 | New | Blank sketch |
 
-Factory bank includes **10 haiku pieces** and **10 showcase compositions** (inserts, triggers, branches, META).
+Factory bank includes **10 haiku pieces** and **10 showcase compositions** (inserts, triggers, branches, pattern chips).
 
 ---
 
@@ -91,15 +91,16 @@ FX pedals sit on free ground. They are **master-bus inserts** (not path sends).
 | Param **slider** | Scrub on the pedal; drag a value off the slider → gold **FX param trigger** |
 | Pedal opacity | **1.0** when ON, **0.5** when off |
 | Trigger opacity | **1.0** when next to any lane cell, **0.5** otherwise |
+| Trigger labels | Two-line face: **action** (ON / OFF / value / P+) + **owner** (DLY / HH / PAT, …) |
 | Cancel drop | Drop back **on the pedal** |
 
 ### Adjacency rule
 
 A trigger fires when it is **orthogonally adjacent** (not diagonal) to a **playhead-lit** step cell. Values **sample-and-hold** until another chip for the same target fires, or transport stops.
 
-### Pattern META
+### Pattern ± chips
 
-`P+` / `P−` / `P→n` modules fire when the playhead **column** hits them. They step or jump the sketch bank without rewinding the global beat clock.
+Drag transport **‹** (Pattern −) or **›** (Pattern +) onto empty ground beside a step. When an adjacent step lights, the sketch bank steps without rewinding the global beat clock. Click ‹ › without dragging still changes the sketch immediately.
 
 ---
 
@@ -126,6 +127,7 @@ Always on screen:
 | Automate delay time | Select delay → scrub Time → drag value off slider to a cell beside a step |
 | Automate voice level | CHAN → Sound → drag Level bar off onto grid |
 | Engage reverb mid-phrase | Drag green **ON** beside the step where reverb should start; **OFF** where it should stop |
+| Pattern + / − on grid | Drag transport **›** / **‹** onto a cell beside a step |
 | Reshape loop | Drag 𝄋 start or TERM end; inactive steps stay half-visible mid-drag |
 
 ---
@@ -142,7 +144,7 @@ Always on screen:
 | **Metric tape** | Multi-lane groove + delay time on beats |
 | **Filter wound** | Filter cutoff chips + distort burst |
 | **Branch river** | JUMP/JDST, locks, delay on branch |
-| **Pattern carousel** | META P+ / P− / P→ + reverb |
+| **Pattern carousel** | Adjacency P+/P− chips + reverb |
 | **Tape loop garden** | Freeform path, dual delays, channel level chips |
 
 Plus ten musical **haiku** sketches (Rain on tin, …) in the same bank.
