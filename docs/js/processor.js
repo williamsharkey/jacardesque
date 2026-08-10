@@ -127,9 +127,29 @@ class Voice {
     this.noise = 0;
     this.filter = 0;
     this.seed = 1;
+    // Smoothed stereo gains — absorb pan/level jumps on re-trigger / steal
+    this.sGl = null;
+    this.sGr = null;
+    this.sLevel = null;
+    this.tGl = 1;
+    this.tGr = 1;
+  }
+
+  _ensureSmooth(sampleRate) {
+    if (!this.sGl) {
+      this.sGl = new SmoothParam(1, SMOOTH.pan, sampleRate);
+      this.sGr = new SmoothParam(1, SMOOTH.pan, sampleRate);
+      this.sLevel = new SmoothParam(1, SMOOTH.gain, sampleRate);
+    } else {
+      this.sGl.setTime(SMOOTH.pan, sampleRate);
+      this.sGr.setTime(SMOOTH.pan, sampleRate);
+      this.sLevel.setTime(SMOOTH.gain, sampleRate);
+    }
   }
 
   trigger(note, sampleRate) {
+    this._ensureSmooth(sampleRate);
+    const wasActive = this.active;
     this.note = note;
     this.active = true;
     this.carrierPhase = 0;
@@ -141,6 +161,15 @@ class Voice {
     this.filter = 0;
     this.seed = (note.startSample * 1103515245 + 12345) >>> 0 || 1;
     this.increment = note.frequency / sampleRate;
+    const g = panGains(note);
+    this.tGl = g.left;
+    this.tGr = g.right;
+    // Fresh voice: snap. Voice-steal re-trigger: keep smoothers (avoids pan pop).
+    if (!wasActive) {
+      this.sGl.snap(g.left);
+      this.sGr.snap(g.right);
+      this.sLevel.snap(1);
+    }
   }
 
   release() {
@@ -322,7 +351,12 @@ class VoicePool {
       if (!voice.active) continue;
       const note = voice.note;
       const total = totalDuration(note);
-      const gains = panGains(note);
+      voice._ensureSmooth(sampleRate);
+      // Target gains from note (channel-automation bakes into new notes; smoothers
+      // ease pan/level when a voice is stolen or params differ at re-trigger).
+      const target = panGains(note);
+      voice.tGl = target.left;
+      voice.tGr = target.right;
       const ch = Math.min(8, Math.max(1, note.channel | 1)) - 1;
       for (let frame = 0; frame < frameCount; frame++) {
         const time = (bufferStart + frame - note.startSample) * dt;
@@ -332,8 +366,10 @@ class VoicePool {
           break;
         }
         const sample = voice.next(time);
-        dryL[frame] += sample * gains.left;
-        dryR[frame] += sample * gains.right;
+        const gl = voice.sGl.next(voice.tGl);
+        const gr = voice.sGr.next(voice.tGr);
+        dryL[frame] += sample * gl;
+        dryR[frame] += sample * gr;
         reverbIn[frame] += sample * note.reverbSend;
         delayIn[frame] += sample * note.delaySend;
         if (channelMono && channelMono[ch]) channelMono[ch][frame] += sample;
@@ -553,29 +589,95 @@ function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
+function clamp(x, lo, hi) {
+  if (!Number.isFinite(x)) return lo;
+  return x < lo ? lo : x > hi ? hi : x;
+}
+
+/**
+ * One-pole parameter smoother (≈timeSec to settle).
+ * Prevents zipper noise / clicks when automation snaps.
+ */
+class SmoothParam {
+  constructor(init, timeSec, sampleRate) {
+    this.v = Number.isFinite(init) ? init : 0;
+    this.setTime(timeSec, sampleRate);
+  }
+
+  setTime(timeSec, sampleRate) {
+    const sr = Math.max(1, sampleRate || 48000);
+    const t = Math.max(0.0005, timeSec || 0.01);
+    // coeff = e^(-1/(τ·fs)) for y += (x-y)*(1-coeff) form via mul
+    this.a = 1 - Math.exp(-1 / (t * sr));
+  }
+
+  /** Snap immediately (first use / module create). */
+  snap(target) {
+    this.v = Number.isFinite(target) ? target : this.v;
+    return this.v;
+  }
+
+  next(target) {
+    if (!Number.isFinite(target)) return this.v;
+    this.v += (target - this.v) * this.a;
+    return this.v;
+  }
+}
+
+// Default smoothing times (seconds) — long enough to kill clicks, short enough to feel snappy
+const SMOOTH = {
+  gain: 0.008, // ~8 ms ON/OFF / mix engage
+  mix: 0.012,
+  pan: 0.015, // pan jumps are very audible
+  filter: 0.012,
+  drive: 0.015,
+  delayTime: 0.025, // delay-time jumps are the noisiest
+  feedback: 0.02,
+  tone: 0.02,
+  generic: 0.012,
+};
+
 // ---------------------------------------------------------------------------
 // Grid FX modules — each pedal is a lightweight stereo processor
+// All continuous params are one-pole smoothed inside the sample loop.
 // ---------------------------------------------------------------------------
 
 class ModDelay {
   constructor(sampleRate) {
+    this.sampleRate = sampleRate;
     this.cap = Math.floor(sampleRate * 2) + 4;
     this.bufL = new Float32Array(this.cap);
     this.bufR = new Float32Array(this.cap);
     this.w = 0;
     this.lpL = 0;
     this.lpR = 0;
+    this.sMix = new SmoothParam(0.35, SMOOTH.mix, sampleRate);
+    this.sTap = new SmoothParam(sampleRate * 0.35, SMOOTH.delayTime, sampleRate);
+    this.sFb = new SmoothParam(0.35, SMOOTH.feedback, sampleRate);
+    this.sTone = new SmoothParam(0.4, SMOOTH.tone, sampleRate);
+    this._inited = false;
   }
 
   process(inL, inR, outL, outR, n, params, sampleRate) {
-    const mix = clamp01(params.mix ?? 0.35);
-    const time = Math.min(1.8, Math.max(0.02, params.time ?? 0.35));
-    const fb = Math.min(0.92, Math.max(0, params.feedback ?? 0.35));
-    const tone = clamp01(params.tone ?? 0.4);
-    const tap = Math.min(this.cap - 2, Math.max(2, time * sampleRate));
-    const cut = (1 - tone) * (1 - tone) * 0.95 + 0.05;
+    const tMix = clamp01(params.mix ?? 0.35);
+    const tTime = clamp(params.time ?? 0.35, 0.02, 1.8);
+    const tFb = clamp(params.feedback ?? 0.35, 0, 0.92);
+    const tTone = clamp01(params.tone ?? 0.4);
+    const tTap = clamp(tTime * sampleRate, 2, this.cap - 2);
+    if (!this._inited) {
+      this.sMix.snap(tMix);
+      this.sTap.snap(tTap);
+      this.sFb.snap(tFb);
+      this.sTone.snap(tTone);
+      this._inited = true;
+    }
     let w = this.w;
     for (let i = 0; i < n; i++) {
+      const mix = this.sMix.next(tMix);
+      const tap = this.sTap.next(tTap);
+      const fb = this.sFb.next(tFb);
+      const tone = this.sTone.next(tTone);
+      const cut = (1 - tone) * (1 - tone) * 0.95 + 0.05;
       let r = w - tap;
       if (r < 0) r += this.cap;
       const ri = r | 0;
@@ -597,31 +699,60 @@ class ModDelay {
 }
 
 class ModDistort {
+  constructor(sampleRate) {
+    this.sMix = new SmoothParam(0.4, SMOOTH.mix, sampleRate);
+    this.sDrive = new SmoothParam(0.45, SMOOTH.drive, sampleRate);
+    this._inited = false;
+  }
+
   process(inL, inR, outL, outR, n, params) {
-    const mix = clamp01(params.mix ?? 0.4);
-    const drive = 1 + clamp01(params.drive ?? 0.45) * 8;
+    const tMix = clamp01(params.mix ?? 0.4);
+    const tDrive = clamp01(params.drive ?? 0.45);
+    if (!this._inited) {
+      this.sMix.snap(tMix);
+      this.sDrive.snap(tDrive);
+      this._inited = true;
+    }
     for (let i = 0; i < n; i++) {
+      const mix = this.sMix.next(tMix);
+      const drive = 1 + this.sDrive.next(tDrive) * 8;
       const wl = Math.tanh(inL[i] * drive);
       const wr = Math.tanh(inR[i] * drive);
-      outL[i] += (inL[i] * (1 - mix) + wl * mix);
-      outR[i] += (inR[i] * (1 - mix) + wr * mix);
+      outL[i] += inL[i] * (1 - mix) + wl * mix;
+      outR[i] += inR[i] * (1 - mix) + wr * mix;
     }
   }
 }
 
 class ModFilter {
-  constructor() {
+  constructor(sampleRate) {
     this.zL = 0;
     this.zR = 0;
+    this.sMix = new SmoothParam(1, SMOOTH.mix, sampleRate);
+    this.sCut = new SmoothParam(0.55, SMOOTH.filter, sampleRate);
+    this.sRes = new SmoothParam(0.2, SMOOTH.filter, sampleRate);
+    this._inited = false;
   }
 
   process(inL, inR, outL, outR, n, params) {
-    const mix = clamp01(params.mix ?? 1);
-    const cut = 0.02 + clamp01(params.cutoff ?? 0.55) * 0.7;
-    const res = clamp01(params.reso ?? 0.2) * 0.9;
+    const tMix = clamp01(params.mix ?? 1);
+    const tCut = clamp01(params.cutoff ?? 0.55);
+    const tRes = clamp01(params.reso ?? 0.2);
+    if (!this._inited) {
+      this.sMix.snap(tMix);
+      this.sCut.snap(tCut);
+      this.sRes.snap(tRes);
+      this._inited = true;
+    }
     for (let i = 0; i < n; i++) {
+      const mix = this.sMix.next(tMix);
+      const cut = 0.02 + this.sCut.next(tCut) * 0.7;
+      const res = this.sRes.next(tRes) * 0.9;
       this.zL += (inL[i] - this.zL - this.zL * res * 0.3) * cut;
       this.zR += (inR[i] - this.zR - this.zR * res * 0.3) * cut;
+      // Soft-clip filter state to avoid denormal/NaN blowups
+      if (!Number.isFinite(this.zL)) this.zL = 0;
+      if (!Number.isFinite(this.zR)) this.zR = 0;
       outL[i] += inL[i] * (1 - mix) + this.zL * mix;
       outR[i] += inR[i] * (1 - mix) + this.zR * mix;
     }
@@ -629,13 +760,34 @@ class ModFilter {
 }
 
 class ModPan {
+  constructor(sampleRate) {
+    // Pan discontinuities are extremely clicky — use a slightly longer τ
+    this.sPan = new SmoothParam(0, SMOOTH.pan, sampleRate);
+    this.sWidth = new SmoothParam(0.5, SMOOTH.mix, sampleRate);
+    this.sGl = new SmoothParam(1, SMOOTH.pan, sampleRate);
+    this.sGr = new SmoothParam(1, SMOOTH.pan, sampleRate);
+    this._inited = false;
+  }
+
   process(inL, inR, outL, outR, n, params) {
-    const pan = Math.min(1, Math.max(-1, params.pan ?? 0));
-    const width = clamp01(params.width ?? 0.5);
-    const angle = (pan + 1) * (FastMath.HalfPi * 0.5);
-    const gl = FastMath.cos(angle) * 1.414;
-    const gr = FastMath.sin(angle) * 1.414;
+    const tPan = clamp(params.pan ?? 0, -1, 1);
+    const tWidth = clamp01(params.width ?? 0.5);
+    const tAngle = (tPan + 1) * (FastMath.HalfPi * 0.5);
+    const tGl = FastMath.cos(tAngle) * 1.414;
+    const tGr = FastMath.sin(tAngle) * 1.414;
+    if (!this._inited) {
+      this.sPan.snap(tPan);
+      this.sWidth.snap(tWidth);
+      this.sGl.snap(tGl);
+      this.sGr.snap(tGr);
+      this._inited = true;
+    }
     for (let i = 0; i < n; i++) {
+      // Smooth the *gains* (not only pan angle) so L/R never jump
+      this.sPan.next(tPan);
+      const width = this.sWidth.next(tWidth);
+      const gl = this.sGl.next(tGl);
+      const gr = this.sGr.next(tGr);
       const mid = (inL[i] + inR[i]) * 0.5;
       const side = (inL[i] - inR[i]) * 0.5 * width;
       const l = mid + side;
@@ -651,16 +803,22 @@ class FxModuleRuntime {
     this.id = id;
     this.type = type;
     this.params = {};
+    this.sampleRate = sampleRate;
     this.inL = null;
     this.inR = null;
     this.outL = null;
     this.outR = null;
+    this.mixGain = 0;
+    this.targetOn = false;
+    // Smoothed user-mix for insert blend (in addition to engage gain)
+    this.sUserMix = new SmoothParam(0.35, SMOOTH.mix, sampleRate);
+    this._mixInited = false;
     if (type === "delay") this.engine = new ModDelay(sampleRate);
     else if (type === "reverb") this.engine = new ReverbBus(sampleRate);
-    else if (type === "distort") this.engine = new ModDistort();
-    else if (type === "filter") this.engine = new ModFilter();
-    else if (type === "pan") this.engine = new ModPan();
-    else if (type === "pat+" || type === "pat-" || type === "patgo") this.engine = null; // control only
+    else if (type === "distort") this.engine = new ModDistort(sampleRate);
+    else if (type === "filter") this.engine = new ModFilter(sampleRate);
+    else if (type === "pan") this.engine = new ModPan(sampleRate);
+    else if (type === "pat+" || type === "pat-" || type === "patgo") this.engine = null;
     else this.engine = new ModDelay(sampleRate);
   }
 
@@ -772,12 +930,9 @@ class GridFxGraph {
   }
 
   /**
-   * Insert mode: serial process dryL/R through ON pedals (mix→0 when off).
-   * ~10-sample linear ramp on engage/bypass to avoid clicks.
-   * Result written back into dryL/R; wet left unused for grid inserts.
-   *
-   * Critical: fully-bypassed pedals must not touch the chain (and must never
-   * blend with non-finite wet — `NaN * 0` is NaN and silences the master).
+   * Insert mode: serial process dryL/R through ON pedals.
+   * Engage/bypass and user-mix are one-pole smoothed (~8–12 ms).
+   * Fully-bypassed pedals skip the chain (no NaN wet bleed).
    */
   process(channelMono, dryL, dryR, wetL, wetR, n) {
     if (!this.enabled) return;
@@ -793,21 +948,23 @@ class GridFxGraph {
       workR[i] = dryR[i];
     }
 
-    const RAMP = 10; // samples
+    // ~10 ms linear ramp for ON/OFF engage (sample-accurate within the block)
+    const engageSamples = Math.max(32, Math.round(this.sampleRate * SMOOTH.gain));
+    const engageCoeff = 1 / engageSamples;
+
     for (const id of this.order) {
       const rt = this.modules.get(id);
       if (!rt || !rt.engine) continue;
 
       const want = rt.targetOn ? 1 : 0;
       let g = Number.isFinite(rt.mixGain) ? rt.mixGain : 0;
-      // Fully bypassed: leave the dry chain untouched (no NaN wet bleed).
+      // Fully bypassed and settled: skip entirely
       if (want === 0 && g < 1e-4) {
         rt.mixGain = 0;
         continue;
       }
 
       rt.ensure(n);
-      const step = (want - g) / RAMP;
 
       for (let i = 0; i < n; i++) {
         rt.inL[i] = workL[i];
@@ -816,20 +973,35 @@ class GridFxGraph {
       rt.outL.fill(0, 0, n);
       rt.outR.fill(0, 0, n);
 
-      // Process as full wet; we blend with user mix * engage ramp below.
-      const savedMix = Number.isFinite(rt.params?.mix) ? rt.params.mix : 0.35;
+      // Process wet at full wet (engines smooth their own params internally).
+      // For pan, there is no separate dry/wet — wet IS the panned signal.
+      const tUserMix = Number.isFinite(rt.params?.mix) ? rt.params.mix
+        : (rt.type === "pan" || rt.type === "filter" ? 1 : 0.35);
+      if (!rt._mixInited) {
+        rt.sUserMix.snap(clamp01(tUserMix));
+        rt._mixInited = true;
+      }
       const prevParams = rt.params;
-      rt.params = { ...prevParams, mix: 1 };
+      // Force engine-internal mix=1 so we own the insert wet/dry blend here
+      // (except pan which has no mix — full wet path).
+      if (rt.type !== "pan") {
+        rt.params = { ...prevParams, mix: 1 };
+      }
       this._processInsertWet(rt, n);
       rt.params = prevParams;
 
-      const userMix = clamp01(savedMix);
       for (let i = 0; i < n; i++) {
-        if (Math.abs(want - g) > 1e-6) {
-          g += step;
-          if ((step > 0 && g > want) || (step < 0 && g < want)) g = want;
+        // Smooth engage gate sample-by-sample
+        if (g < want) {
+          g = Math.min(want, g + engageCoeff);
+        } else if (g > want) {
+          g = Math.max(want, g - engageCoeff);
         }
-        const m = clamp01(g * userMix);
+        const userMix = rt.sUserMix.next(clamp01(tUserMix));
+        // Pan is a routing insert: when engaged, full wet (panned), no dry bleed
+        const m = rt.type === "pan"
+          ? clamp01(g)
+          : clamp01(g * userMix);
         const dry = workL[i];
         const dryR0 = workR[i];
         if (m <= 1e-6) {
@@ -837,7 +1009,6 @@ class GridFxGraph {
           tmpR[i] = dryR0;
           continue;
         }
-        // Finite-safe wet (NaN * m would silence the whole bus)
         let wl = rt.outL[i];
         let wr = rt.outR[i];
         if (!Number.isFinite(wl)) wl = 0;
