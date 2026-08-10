@@ -641,6 +641,27 @@ export function gpOffset(p, dx, dy) {
   return gp(p.x + dx, p.y + dy);
 }
 
+/** Toroidal wrap helpers (Pac-Man grid). */
+export function wrapCoord(v, size) {
+  const s = Math.max(2, size | 0);
+  return ((v % s) + s) % s;
+}
+
+export function wrapPoint(p, gridW, gridH) {
+  return gp(wrapCoord(p.x, gridW), wrapCoord(p.y, gridH));
+}
+
+export function toroidalDelta(from, to, gridW, gridH) {
+  // Shortest signed delta on a torus.
+  let dx = to.x - from.x;
+  let dy = to.y - from.y;
+  if (dx > gridW / 2) dx -= gridW;
+  if (dx < -gridW / 2) dx += gridW;
+  if (dy > gridH / 2) dy -= gridH;
+  if (dy < -gridH / 2) dy += gridH;
+  return { dx, dy };
+}
+
 export class Step {
   constructor() {
     this.tiles = [];
@@ -659,13 +680,24 @@ export class Step {
   }
 }
 
+/**
+ * A lane is a path of step cells plus start (repeat) and end (loop-back) markers.
+ * X----Y with 4 dashes = 4 steps; start is before the first beat, end after the last.
+ * When start and end occupy the same cell → circular tape-loop.
+ */
 export class Lane {
   constructor(x, y, head) {
-    this.x = x;
+    this.x = x; // first-step x (legacy + path origin)
     this.y = y;
     this.head = head;
     this.steps = [];
+    /** @type {{x:number,y:number}[]} world positions of each step */
+    this.path = [];
+    this.circular = false;
     this.jumpSource = null;
+    // Gray-out window: inactive prefix/suffix while reshaping (indices into path)
+    this.activeFrom = 0;
+    this.activeTo = null; // exclusive; null = steps.length
   }
 
   get channel() {
@@ -676,53 +708,194 @@ export class Lane {
     return this.head instanceof JumpDestTile;
   }
 
+  /** Ensure path[i] matches each step; default straight horizontal. */
+  ensurePath() {
+    if (this.path.length === this.steps.length && this.path.length > 0) return;
+    if (this.path.length > this.steps.length) {
+      this.path.length = this.steps.length;
+    }
+    while (this.path.length < this.steps.length) {
+      const i = this.path.length;
+      if (i === 0) this.path.push(gp(this.x, this.y));
+      else {
+        const prev = this.path[i - 1];
+        this.path.push(gp(prev.x + 1, prev.y));
+      }
+    }
+    if (this.steps.length) {
+      this.x = this.path[0].x;
+      this.y = this.path[0].y;
+    }
+    if (this.activeTo == null || this.activeTo > this.steps.length) {
+      this.activeTo = this.steps.length;
+    }
+  }
+
+  get activeStart() {
+    return Math.max(0, Math.min(this.activeFrom | 0, Math.max(0, this.steps.length - 1)));
+  }
+
+  get activeEnd() {
+    const end = this.activeTo == null ? this.steps.length : this.activeTo;
+    return Math.max(this.activeStart + 1, Math.min(this.steps.length, end));
+  }
+
+  isStepActive(i) {
+    return i >= this.activeStart && i < this.activeEnd;
+  }
+
   get headX() {
-    return this.x - 1;
+    return this.headPoint.x;
   }
 
   get termX() {
-    return this.x + this.steps.length;
+    return this.termPoint.x;
   }
 
+  /** Start marker — dal segno / return-to (before first active beat). */
   get headPoint() {
-    return gp(this.headX, this.y);
+    this.ensurePath();
+    if (!this.path.length) return gp(this.x - 1, this.y);
+    const p0 = this.path[0];
+    // Direction opposite the first edge (or left if single step)
+    let dx = -1;
+    let dy = 0;
+    if (this.path.length > 1) {
+      const p1 = this.path[1];
+      dx = Math.sign(p0.x - p1.x) || (p0.y === p1.y ? -1 : 0);
+      dy = Math.sign(p0.y - p1.y) || 0;
+      if (dx === 0 && dy === 0) {
+        dx = -1;
+        dy = 0;
+      }
+    }
+    // Circular: start/end share the joint cell before the first beat (not a step).
+    return gp(p0.x + dx, p0.y + dy);
   }
 
+  /** End marker — loop-back (after last active beat). Circular: same as head. */
   get termPoint() {
-    return gp(this.termX, this.y);
+    this.ensurePath();
+    if (!this.path.length) return gp(this.x, this.y);
+    if (this.circular) return this.headPoint;
+    const last = this.path[this.path.length - 1];
+    if (this.path.length > 1) {
+      const prev = this.path[this.path.length - 2];
+      const dx = Math.sign(last.x - prev.x) || 1;
+      const dy = Math.sign(last.y - prev.y) || 0;
+      return gp(last.x + dx, last.y + dy);
+    }
+    return gp(last.x + 1, last.y);
   }
 
   cellPoint(step, depth) {
-    return gp(this.x + step, this.y + depth);
+    this.ensurePath();
+    if (step < 0 || step >= this.path.length) {
+      return gp(this.x + step, this.y + depth);
+    }
+    const p = this.path[step];
+    return gp(p.x, p.y + depth);
+  }
+
+  stepIndexAt(point) {
+    this.ensurePath();
+    for (let i = 0; i < this.path.length; i++) {
+      if (this.path[i].x === point.x && this.path[i].y === point.y) return i;
+    }
+    return -1;
   }
 
   stepAt(index) {
     return index >= 0 && index < this.steps.length ? this.steps[index] : null;
   }
 
-  addStep() {
+  addStep(atPoint = null) {
     const step = new Step();
     this.steps.push(step);
+    this.ensurePath();
+    if (atPoint) {
+      this.path[this.path.length - 1] = gp(atPoint.x, atPoint.y);
+      this.x = this.path[0].x;
+      this.y = this.path[0].y;
+    }
+    this.activeTo = this.steps.length;
     return step;
   }
 
+  /** Truncate to n steps (from the end). */
+  setLength(n) {
+    n = Math.max(1, n | 0);
+    while (this.steps.length > n) {
+      this.steps.pop();
+      this.path.pop();
+    }
+    while (this.steps.length < n) this.addStep();
+    this.activeFrom = 0;
+    this.activeTo = this.steps.length;
+    this.circular = false;
+  }
+
+  /** Shorten from the end to end at step index lastInclusive. */
+  truncateEndTo(lastInclusive) {
+    const n = Math.max(1, (lastInclusive | 0) + 1);
+    this.setLength(n);
+  }
+
+  /** Shorten from the start — drop steps before firstInclusive. */
+  truncateStartTo(firstInclusive) {
+    this.ensurePath();
+    const i = Math.max(0, Math.min(this.steps.length - 1, firstInclusive | 0));
+    if (i === 0) return;
+    this.steps.splice(0, i);
+    this.path.splice(0, i);
+    this.x = this.path[0].x;
+    this.y = this.path[0].y;
+    this.activeFrom = 0;
+    this.activeTo = this.steps.length;
+    this.circular = false;
+  }
+
   *occupiedCells() {
-    for (let x = this.headX; x <= this.termX; x++) yield gp(x, this.y);
+    this.ensurePath();
+    if (!this.circular) {
+      yield this.headPoint;
+      yield this.termPoint;
+    } else {
+      yield this.headPoint; // combined start/end
+    }
     for (let i = 0; i < this.steps.length; i++) {
-      for (let d = 1; d < this.steps[i].depth; d++) yield this.cellPoint(i, d);
+      yield this.path[i];
+      for (let d = 1; d < this.steps[i].depth; d++) {
+        yield this.cellPoint(i, d);
+      }
     }
   }
 
   owns(point) {
-    if (this.isOnRail(point)) return true;
-    const step = point.x - this.x;
-    const depth = point.y - this.y;
-    return step >= 0 && step < this.steps.length &&
-      depth >= 1 && depth < this.steps[step].depth;
+    this.ensurePath();
+    if (gpEq(point, this.headPoint) || gpEq(point, this.termPoint)) return true;
+    for (let i = 0; i < this.path.length; i++) {
+      if (this.path[i].x === point.x && this.path[i].y === point.y) return true;
+      for (let d = 1; d < this.steps[i].depth; d++) {
+        if (gpEq(point, this.cellPoint(i, d))) return true;
+      }
+    }
+    return false;
   }
 
   isOnRail(point) {
-    return point.y === this.y && point.x >= this.headX && point.x <= this.termX;
+    this.ensurePath();
+    if (gpEq(point, this.headPoint) || gpEq(point, this.termPoint)) return true;
+    return this.stepIndexAt(point) >= 0;
+  }
+
+  /** Sync legacy x,y from path[0]. */
+  syncOrigin() {
+    this.ensurePath();
+    if (this.path.length) {
+      this.x = this.path[0].x;
+      this.y = this.path[0].y;
+    }
   }
 }
 
@@ -746,35 +919,63 @@ export class Score {
     this.pathRoutes = [];
     this.fxRoutes = [];
     this.autoNodes = [];
+    // Torus size (Pac-Man). Min 2×2.
+    this.gridW = 32;
+    this.gridH = 16;
+  }
+
+  wrap(point) {
+    return wrapPoint(point, this.gridW, this.gridH);
   }
 
   at(point) {
+    point = this.wrap(point);
     for (const lane of this.lanes) {
+      lane.ensurePath();
       if (gpEq(point, lane.headPoint)) {
-        return { kind: CellKind.Head, lane, step: -1, depth: 0, tile: lane.head };
+        return {
+          kind: lane.circular ? CellKind.Head : CellKind.Head,
+          lane,
+          step: -1,
+          depth: 0,
+          tile: lane.head,
+          circular: lane.circular,
+        };
       }
-      if (gpEq(point, lane.termPoint)) {
+      if (!lane.circular && gpEq(point, lane.termPoint)) {
         return { kind: CellKind.Term, lane, step: lane.steps.length, depth: 0, tile: Terminator };
       }
-      const step = point.x - lane.x;
-      const depth = point.y - lane.y;
-      if (step < 0 || step >= lane.steps.length || depth < 0) continue;
-      const tile = lane.steps[step].at(depth);
-      if (tile) return { kind: CellKind.Tile, lane, step, depth, tile };
-      if (depth === 0) return { kind: CellKind.Rail, lane, step, depth: 0, tile: null };
+      for (let i = 0; i < lane.path.length; i++) {
+        const p = lane.path[i];
+        if (p.x === point.x && p.y === point.y) {
+          const tile = lane.steps[i].at(0);
+          if (tile) return { kind: CellKind.Tile, lane, step: i, depth: 0, tile };
+          return { kind: CellKind.Rail, lane, step: i, depth: 0, tile: null };
+        }
+        for (let d = 1; d < lane.steps[i].depth; d++) {
+          const cp = lane.cellPoint(i, d);
+          if (cp.x === point.x && cp.y === point.y) {
+            const tile = lane.steps[i].at(d);
+            if (tile) return { kind: CellKind.Tile, lane, step: i, depth: d, tile };
+          }
+        }
+      }
     }
     return emptyCell();
   }
 
   isFree(point, except = null) {
+    point = this.wrap(point);
     for (const lane of this.lanes) {
       if (lane !== except && lane.owns(point)) return false;
     }
     return true;
   }
 
-  hasRoomToGrow(lane) {
-    return this.isFree(gpOffset(lane.termPoint, 1, 0), lane);
+  hasRoomToGrow(lane, toward = null) {
+    lane.ensurePath();
+    if (toward) return this.isFree(this.wrap(toward), lane);
+    return this.isFree(lane.termPoint, lane);
   }
 
   locate(tile) {
@@ -821,20 +1022,19 @@ export class Score {
   }
 
   get width() {
-    if (!this.lanes.length) return 0;
-    return Math.max(...this.lanes.map((l) => l.termX)) + 1;
+    return this.gridW;
   }
 
   get height() {
-    if (!this.lanes.length) return 0;
-    return Math.max(...this.lanes.map(bottomOf)) + 1;
+    return this.gridH;
   }
 
   place(point, tile) {
+    point = this.wrap(point);
     const placement = this.placementLane(point);
     if (!placement) return false;
     let { lane, step, depth } = placement;
-    if (step === lane.steps.length) lane.addStep();
+    if (step === lane.steps.length) lane.addStep(point);
     const tiles = lane.steps[step].tiles;
     if (depth < tiles.length) tiles[depth] = tile;
     else tiles.push(tile);
@@ -842,18 +1042,22 @@ export class Score {
   }
 
   placementLane(point) {
+    point = this.wrap(point);
     for (const lane of this.lanes) {
-      const sx = point.x - lane.x;
-      const sy = point.y - lane.y;
-      if (sx < 0 || sx > lane.steps.length || sy < 0) continue;
-      if (sx === lane.steps.length) {
-        if (sy !== 0) continue;
-        if (!this.hasRoomToGrow(lane)) continue;
-        return { lane, step: sx, depth: 0 };
+      lane.ensurePath();
+      for (let i = 0; i < lane.path.length; i++) {
+        const p = lane.path[i];
+        if (p.x !== point.x) continue;
+        const depth = point.y - p.y;
+        if (depth < 0) continue;
+        if (depth > lane.steps[i].depth) continue;
+        if (depth === lane.steps[i].depth && !this.isFree(point, lane)) continue;
+        return { lane, step: i, depth };
       }
-      if (sy > lane.steps[sx].depth) continue;
-      if (sy === lane.steps[sx].depth && !this.isFree(point, lane)) continue;
-      return { lane, step: sx, depth: sy };
+      if (!lane.circular && gpEq(point, lane.termPoint)) {
+        if (!this.isFree(point, lane)) continue;
+        return { lane, step: lane.steps.length, depth: 0 };
+      }
     }
     return null;
   }
@@ -875,17 +1079,18 @@ export class Score {
   }
 
   dropLane(point) {
+    point = this.wrap(point);
+    // Prefer exact step hits; allow drop on term to grow
+    const place = this.placementLane(point);
+    if (place) return place;
     for (const lane of this.lanes) {
-      const sx = point.x - lane.x;
-      const sy = point.y - lane.y;
-      if (sx < 0 || sx > lane.steps.length || sy < 0) continue;
-      if (sx === lane.steps.length) {
-        if (sy !== 0) continue;
-        if (!this.hasRoomToGrow(lane)) continue;
-        return { lane, step: sx, depth: 0 };
+      lane.ensurePath();
+      for (let i = 0; i < lane.path.length; i++) {
+        const p = lane.path[i];
+        if (p.x === point.x && point.y >= p.y && point.y <= p.y + lane.steps[i].depth) {
+          return { lane, step: i, depth: Math.min(lane.steps[i].depth, point.y - p.y) };
+        }
       }
-      if (sy > lane.steps[sx].depth) continue;
-      return { lane, step: sx, depth: sy };
     }
     return null;
   }
@@ -925,28 +1130,160 @@ export class Score {
 
   canMoveLane(lane, head) {
     if (!lane || !this.lanes.includes(lane)) return false;
-    if (head.x < 0 || head.y < 0) return false;
-    const dx = head.x - lane.headX;
-    const dy = head.y - lane.y;
-    if (dx === 0 && dy === 0) return false;
+    head = this.wrap(head);
+    lane.ensurePath();
+    const cur = lane.headPoint;
+    const dx = head.x - cur.x;
+    const dy = head.y - cur.y;
+    // Use toroidal shortest delta for move test
+    const d = toroidalDelta(cur, head, this.gridW, this.gridH);
+    if (d.dx === 0 && d.dy === 0) return false;
     for (const cell of lane.occupiedCells()) {
-      if (!this.isFree(gpOffset(cell, dx, dy), lane)) return false;
+      const np = this.wrap(gp(cell.x + d.dx, cell.y + d.dy));
+      if (!this.isFree(np, lane)) return false;
     }
     return true;
   }
 
   moveLane(lane, head) {
     if (!this.canMoveLane(lane, head)) return false;
-    lane.x = head.x + 1;
-    lane.y = head.y;
+    lane.ensurePath();
+    const d = toroidalDelta(lane.headPoint, this.wrap(head), this.gridW, this.gridH);
+    for (let i = 0; i < lane.path.length; i++) {
+      lane.path[i] = this.wrap(gp(lane.path[i].x + d.dx, lane.path[i].y + d.dy));
+    }
+    lane.syncOrigin();
     return true;
   }
 
   addLane(x, y, head, steps) {
+    x = wrapCoord(x, this.gridW);
+    y = wrapCoord(y, this.gridH);
     const lane = new Lane(x, y, head);
     for (let i = 0; i < steps; i++) lane.addStep();
+    lane.ensurePath();
     this.lanes.push(lane);
     return lane;
+  }
+
+  /**
+   * Drag end handle to a cell: shorten (if on existing path) or extend
+   * following free cells. Stacking on start → circular tape loop.
+   */
+  reshapeLaneEnd(lane, target) {
+    if (!lane) return false;
+    target = this.wrap(target);
+    lane.ensurePath();
+
+    // Circular: drop end on start marker
+    if (gpEq(target, lane.headPoint) && lane.steps.length >= 1) {
+      lane.circular = true;
+      return true;
+    }
+
+    // Hit an existing path step → truncate there
+    const hit = lane.stepIndexAt(target);
+    if (hit >= 0) {
+      lane.circular = false;
+      lane.truncateEndTo(hit);
+      return true;
+    }
+
+    // Adjacent grow from last step (or from current term if free trail)
+    const last = lane.path[lane.path.length - 1];
+    const d = toroidalDelta(last, target, this.gridW, this.gridH);
+    // Walk Manhattan path from last toward target, appending free cells
+    let cx = last.x;
+    let cy = last.y;
+    let guard = 0;
+    const maxSteps = this.gridW * this.gridH;
+    while ((cx !== target.x || cy !== target.y) && guard++ < maxSteps) {
+      const td = toroidalDelta(gp(cx, cy), target, this.gridW, this.gridH);
+      if (Math.abs(td.dx) >= Math.abs(td.dy) && td.dx !== 0) {
+        cx = wrapCoord(cx + Math.sign(td.dx), this.gridW);
+      } else if (td.dy !== 0) {
+        cy = wrapCoord(cy + Math.sign(td.dy), this.gridH);
+      } else break;
+      const np = gp(cx, cy);
+      if (gpEq(np, lane.headPoint) && lane.steps.length >= 1) {
+        lane.circular = true;
+        return true;
+      }
+      if (!this.isFree(np, lane) && lane.stepIndexAt(np) < 0) return true; // stop cleanly
+      if (lane.stepIndexAt(np) >= 0) {
+        lane.truncateEndTo(lane.stepIndexAt(np));
+        return true;
+      }
+      lane.addStep(np);
+      lane.circular = false;
+    }
+    return true;
+  }
+
+  /**
+   * Drag start handle: shorten from front, or move start (reshape).
+   * Stacking on end → circular.
+   */
+  reshapeLaneStart(lane, target) {
+    if (!lane) return false;
+    target = this.wrap(target);
+    lane.ensurePath();
+
+    if (gpEq(target, lane.termPoint) && !lane.circular && lane.steps.length >= 1) {
+      lane.circular = true;
+      return true;
+    }
+
+    const hit = lane.stepIndexAt(target);
+    if (hit >= 0) {
+      lane.circular = false;
+      lane.truncateStartTo(hit);
+      return true;
+    }
+
+    // Grow/prepend backward from first step toward target
+    const first = lane.path[0];
+    let cx = first.x;
+    let cy = first.y;
+    let guard = 0;
+    const maxSteps = this.gridW * this.gridH;
+    const newCells = [];
+    while ((cx !== target.x || cy !== target.y) && guard++ < maxSteps) {
+      const td = toroidalDelta(gp(cx, cy), target, this.gridW, this.gridH);
+      // step toward target
+      if (Math.abs(td.dx) >= Math.abs(td.dy) && td.dx !== 0) {
+        cx = wrapCoord(cx + Math.sign(td.dx), this.gridW);
+      } else if (td.dy !== 0) {
+        cy = wrapCoord(cy + Math.sign(td.dy), this.gridH);
+      } else break;
+      const np = gp(cx, cy);
+      if (gpEq(np, lane.termPoint)) {
+        lane.circular = true;
+        return true;
+      }
+      if (!this.isFree(np, lane) && lane.stepIndexAt(np) < 0) break;
+      if (lane.stepIndexAt(np) >= 0) {
+        lane.truncateStartTo(lane.stepIndexAt(np));
+        return true;
+      }
+      newCells.push(np);
+    }
+    // Prepend path cells (reverse order of walk = order from new start to old first)
+    if (newCells.length) {
+      // walk went from first toward target, so newCells[0] is next to first...
+      // actually we want cells from target back to first
+      newCells.reverse();
+      for (const c of newCells) {
+        const step = new Step();
+        lane.steps.unshift(step);
+        lane.path.unshift(c);
+      }
+      lane.syncOrigin();
+      lane.circular = false;
+      lane.activeFrom = 0;
+      lane.activeTo = lane.steps.length;
+    }
+    return true;
   }
 
   addBranchLane(jump, near, steps) {
@@ -1014,6 +1351,16 @@ export class Project {
     this.patches = PatchBank.create();
     this.title = "";
     this.haiku = ""; // three lines separated by " / "
+    // Torus defaults (customizable, min 2×2)
+    this.gridW = 32;
+    this.gridH = 16;
+  }
+
+  syncGrid() {
+    this.gridW = Math.max(2, this.gridW | 0);
+    this.gridH = Math.max(2, this.gridH | 0);
+    this.score.gridW = this.gridW;
+    this.score.gridH = this.gridH;
   }
 
   static createEmpty() {
@@ -1079,15 +1426,17 @@ function n(name) {
 // ---------------------------------------------------------------------------
 
 export const ProjectFormat = {
-  // v10: grid FX modules, path routes, fx chains, automation nodes.
-  Version: 10,
+  // v11: freeform lane paths, circular loops, torus grid size.
+  Version: 11,
   Extension: ".jacquard",
 
   write(project) {
     const lines = [];
+    project.syncGrid?.();
     lines.push("jacquard " + this.Version);
     lines.push("tempo " + F(project.tempo));
     lines.push("meter " + project.beatsPerBar + " " + project.beatUnit);
+    lines.push("grid " + (project.gridW || 32) + " " + (project.gridH || 16));
     if (project.title) {
       lines.push("meta title " + String(project.title).replace(/\s+/g, " ").trim());
     }
@@ -1107,6 +1456,7 @@ export const ProjectFormat = {
 
   read(text) {
     const project = new Project();
+    project.syncGrid();
     const score = project.score;
     let lane = null;
     const links = [];
@@ -1128,6 +1478,11 @@ export const ProjectFormat = {
         case "meter":
           project.beatsPerBar = readInt(arg(tokens, 1, number));
           project.beatUnit = readInt(arg(tokens, 2, number));
+          break;
+        case "grid":
+          project.gridW = Math.max(2, readInt(arg(tokens, 1, number)));
+          project.gridH = Math.max(2, readInt(arg(tokens, 2, number)));
+          project.syncGrid();
           break;
         case "meta": {
           const key = arg(tokens, 1, number);
@@ -1171,12 +1526,29 @@ export const ProjectFormat = {
       if (tile instanceof JumpTile) branch.jumpSource = tile;
     }
 
+    project.syncGrid();
+    for (const lane of score.lanes) {
+      // Align path length to steps after all steps are read.
+      if (lane.path.length !== lane.steps.length) {
+        const saved = lane.path.slice();
+        lane.path = [];
+        lane.ensurePath();
+        for (let i = 0; i < Math.min(saved.length, lane.path.length); i++) {
+          lane.path[i] = saved[i];
+        }
+        lane.syncOrigin();
+      } else {
+        lane.ensurePath();
+      }
+    }
+
     return project;
   },
 };
 
 function writeLane(lines, score, lane) {
   let head;
+  lane.ensurePath();
   if (lane.channel) {
     head = "CHAN:" + lane.channel.channel + " div=" + lane.channel.division;
     if (lane.channel.label) {
@@ -1188,6 +1560,10 @@ function writeLane(lines, score, lane) {
       const source = score.locate(lane.jumpSource);
       if (source) head += " from=" + source.x + "," + source.y;
     }
+  }
+  if (lane.circular) head += " circular=1";
+  if (lane.path.length) {
+    head += " path=" + lane.path.map((p) => p.x + "," + p.y).join(";");
   }
   lines.push("lane " + lane.x + " " + lane.y + " " + head);
   for (const step of lane.steps) {
@@ -1386,6 +1762,13 @@ function readLane(score, tokens, number, links) {
     if (key === "div" && tile instanceof ChannelTile) tile.division = readInt(value);
     else if (key === "name" && tile instanceof ChannelTile) tile.label = decodeLaneName(value);
     else if (key === "from") links.push({ branch: lane, point: readPoint(value, number) });
+    else if (key === "circular") lane.circular = value === "1" || value === "true";
+    else if (key === "path") {
+      lane.path = value.split(";").filter(Boolean).map((pair) => {
+        const [px, py] = pair.split(",");
+        return gp(readInt(px), readInt(py));
+      });
+    }
   }
   return lane;
 }

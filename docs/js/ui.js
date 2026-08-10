@@ -367,8 +367,25 @@ export class ScoreView {
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
     this._captureId = null;
+    this._loopDrag = null;
+    this._anim = 0;
 
     this._bind();
+    if (!ScoreView._sharedAnim) {
+      ScoreView._sharedAnim = true;
+      const tick = () => {
+        // Bump a global phase so circular tape-loops animate.
+        for (const v of ScoreView._instances || []) {
+          v._anim = (v._anim || 0) + 1;
+          if (v.score?.lanes?.some((l) => l.circular)) v.paint();
+        }
+        requestAnimationFrame(tick);
+      };
+      ScoreView._instances = ScoreView._instances || [];
+      requestAnimationFrame(tick);
+    }
+    ScoreView._instances = ScoreView._instances || [];
+    if (!ScoreView._instances.includes(this)) ScoreView._instances.push(this);
   }
 
   _bind() {
@@ -422,9 +439,11 @@ export class ScoreView {
   }
 
   setCursor(point) {
+    const W = this.columns;
+    const H = this.rows;
     point = gp(
-      Math.min(this.columns - 1, Math.max(0, point.x)),
-      Math.min(this.rows - 1, Math.max(0, point.y)),
+      ((point.x % W) + W) % W,
+      ((point.y % H) + H) % H,
     );
     if (gpEq(point, this.cursor)) return;
     this.cursor = point;
@@ -454,8 +473,10 @@ export class ScoreView {
   rebuild() {
     this._endDrag();
     this._endPlace(false);
-    this.columns = Math.max(48, this.score.width + 10);
-    this.rows = Math.max(28, this.score.height + 8);
+    this._loopDrag = null;
+    // Fixed toroidal grid (Pac-Man); default 32×16, min 2×2.
+    this.columns = Math.max(2, this.score?.gridW || 32);
+    this.rows = Math.max(2, this.score?.gridH || 16);
     const size = Style.planeSize(this.columns, this.rows);
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.canvas.style.width = size.w + "px";
@@ -493,6 +514,20 @@ export class ScoreView {
     if (autoHit) {
       e.preventDefault();
       this._autoDrag = { ...autoHit, clientX: e.clientX, clientY: e.clientY };
+      this._capture(this.canvas, e.pointerId);
+      this.paint();
+      return;
+    }
+
+    // Drag lane start (dal segno) or end (loop-back)
+    const cellHit = this.score.at(point);
+    if (cellHit.kind === CellKind.Head || cellHit.kind === CellKind.Term) {
+      e.preventDefault();
+      this._loopDrag = {
+        lane: cellHit.lane,
+        which: cellHit.kind === CellKind.Head ? "start" : "end",
+        origin: pos,
+      };
       this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
@@ -568,6 +603,12 @@ export class ScoreView {
   }
 
   _pointerMove(e) {
+    if (this._loopDrag) {
+      const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
+      this._loopDrag.hover = point;
+      this.paint();
+      return;
+    }
     if (this._autoDrag) {
       this._autoDrag.clientX = e.clientX;
       this._autoDrag.clientY = e.clientY;
@@ -631,6 +672,16 @@ export class ScoreView {
     // Always release capture first so pan can never stick after mouse-up.
     this._releaseCapture();
 
+    if (this._loopDrag) {
+      const point = this.score.wrap(Style.cellAt(this.localPoint(e)));
+      const d = this._loopDrag;
+      this._loopDrag = null;
+      if (d.which === "end") this.score.reshapeLaneEnd(d.lane, point);
+      else this.score.reshapeLaneStart(d.lane, point);
+      this.onLoopReshaped?.();
+      this.paint();
+      return;
+    }
     if (this._autoDrag) {
       const point = Style.cellAt(this.localPoint(e));
       const d = this._autoDrag;
@@ -700,6 +751,21 @@ export class ScoreView {
     } else {
       this.placeMenu?.cancel();
     }
+    this.paint();
+  }
+
+  /** Esc / cancel: abort menus and all drag modes. */
+  cancelGestures() {
+    this._releaseCapture();
+    this._placing = false;
+    this.placeMenu?.cancel();
+    this._loopDrag = null;
+    this._autoDrag = null;
+    this._pathDrag = null;
+    this._fxChainDrag = null;
+    this._panning = false;
+    this._panArmed = false;
+    this._endDrag();
     this.paint();
   }
 
@@ -984,14 +1050,70 @@ export class ScoreView {
   }
 
   _drawRails(ctx) {
-    ctx.fillStyle = withAlpha(Style.NoteLine, Style.RailOpacity);
     for (const lane of this.score.lanes) {
-      const from = Style.cellCenter(lane.headPoint).x;
-      const to = Style.cellCenter(lane.termPoint).x;
-      const y = Math.floor(Style.cellCenter(lane.headPoint).y) - Style.RailDot / 2;
-      for (let x = from; x < to; x += Style.RailStep) {
-        ctx.fillRect(x, y, Style.RailDot, Style.RailDot);
+      lane.ensurePath();
+      if (lane.circular && lane.path.length >= 2) {
+        this._drawCircularRail(ctx, lane);
+        continue;
       }
+      // Polyline rail through path centres
+      ctx.strokeStyle = withAlpha(Style.NoteLine, Style.RailOpacity);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([2, 5]);
+      ctx.beginPath();
+      for (let i = 0; i < lane.path.length; i++) {
+        const c = Style.cellCenter(lane.path[i]);
+        if (i === 0) ctx.moveTo(c.x, c.y);
+        else ctx.lineTo(c.x, c.y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Gray inactive span preview while dragging
+      if (this._loopDrag?.lane === lane && this._loopDrag.hover) {
+        ctx.fillStyle = withAlpha("#000", 0.35);
+        // mark potential drop
+        const h = Style.cellRect(this._loopDrag.hover);
+        ctx.fillRect(h.x, h.y, h.w, h.h);
+      }
+    }
+  }
+
+  _drawCircularRail(ctx, lane) {
+    // Seamless tape-loop: points around centroid, animated dash offset
+    const pts = lane.path.map((p) => Style.cellCenter(p));
+    let cx = 0;
+    let cy = 0;
+    for (const p of pts) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= pts.length;
+    cy /= pts.length;
+    // If path is nearly collinear, invent a small loop radius from length
+    let spread = 0;
+    for (const p of pts) spread = Math.max(spread, Math.hypot(p.x - cx, p.y - cy));
+    const r = Math.max(Style.StrideX * 1.2, spread * 0.9 + Style.CellWidth);
+
+    ctx.strokeStyle = withAlpha(Style.NoteLine, 0.55);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.lineDashOffset = -((this._anim || 0) * 0.6) % 10;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+
+    // Step ticks around the circle (flowing forever)
+    const n = lane.path.length;
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i / n) * Math.PI * 2 + ((this._anim || 0) * 0.01);
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      ctx.fillStyle = Style.NoteLine;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -1056,15 +1178,94 @@ export class ScoreView {
 
   _drawTiles(ctx) {
     for (const lane of this.score.lanes) {
-      this._drawTile(ctx, lane.head, lane.headPoint, 1);
-      this._drawTile(ctx, Terminator, lane.termPoint, 1);
+      lane.ensurePath();
+      if (lane.circular) {
+        this._drawCircularJoin(ctx, lane.headPoint);
+      } else {
+        this._drawStartMark(ctx, lane.headPoint, lane.head);
+        this._drawTile(ctx, Terminator, lane.termPoint, 1);
+      }
       for (let i = 0; i < lane.steps.length; i++) {
+        const active = lane.isStepActive(i);
+        const alpha = active ? 1 : 0.28;
         for (let d = 0; d < lane.steps[i].depth; d++) {
           const lifted = this._isLifted(lane, i, d);
-          this._drawTile(ctx, lane.steps[i].tiles[d], lane.cellPoint(i, d), lifted ? 0.2 : 1);
+          this._drawTile(
+            ctx,
+            lane.steps[i].tiles[d],
+            lane.cellPoint(i, d),
+            lifted ? 0.2 : alpha,
+          );
+        }
+        // Gray empty active/inactive rails
+        if (lane.steps[i].isEmpty) {
+          if (!active) {
+            const r = Style.cellRect(lane.path[i]);
+            ctx.fillStyle = withAlpha("#000", 0.25);
+            ctx.fillRect(r.x, r.y, r.w, r.h);
+          }
         }
       }
     }
+  }
+
+  /** Dal segno-style return mark at lane start (before first beat). */
+  _drawStartMark(ctx, point, head) {
+    const r = Style.cellRect(point);
+    ctx.save();
+    ctx.strokeStyle = Style.NoteLine;
+    ctx.fillStyle = Style.ControlBackground;
+    ctx.lineWidth = 1;
+    roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+    ctx.fill();
+    ctx.stroke();
+    // Segno-like S with dots + channel abbr
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    ctx.fillStyle = Style.NoteText;
+    ctx.font = "700 13px Georgia,serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("𝄋", cx, cy - 4);
+    if (head && head.shortName) {
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.fillText(head.shortName, cx, cy + 9);
+    }
+    ctx.restore();
+  }
+
+  /** Combined start/end when loop is circular — two mating triangles. */
+  _drawCircularJoin(ctx, point) {
+    const r = Style.cellRect(point);
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    ctx.save();
+    ctx.fillStyle = Style.ControlBackground;
+    ctx.strokeStyle = Style.NoteLine;
+    ctx.lineWidth = 1;
+    roundRect(ctx, r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, Style.Radius);
+    ctx.fill();
+    ctx.stroke();
+    // Upper-left triangle and lower-right triangle that mate
+    ctx.fillStyle = Style.NoteText;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 8);
+    ctx.lineTo(cx + 2, cy - 8);
+    ctx.lineTo(cx - 8, cy + 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx + 8, cy + 8);
+    ctx.lineTo(cx - 2, cy + 8);
+    ctx.lineTo(cx + 8, cy - 2);
+    ctx.closePath();
+    ctx.fill();
+    // Tiny infinity / loop cue
+    ctx.strokeStyle = withAlpha(Style.NoteLine, 0.7);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 5, 3, -0.4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   _isLifted(lane, step, depth) {
@@ -1631,14 +1832,17 @@ export class JacquardUI {
     this.view.onDoubleClick = () => this.editor.placeNote();
     this.view.onTilesDropped = (s, t) => this.editor.dropTiles(s, t);
     this.view.onLaneDropped = (l, h) => this.editor.dropLane(l, h);
+    this.view.onLoopReshaped = () => {
+      this.editor.commit();
+    };
     this.view.onKey = (e) => {
       if (e.key === " ") {
         e.preventDefault();
         this.app.togglePlay();
         return true;
       }
-      if (e.key === "Escape" && this.view._placing) {
-        this.view._endPlace(false);
+      if (e.key === "Escape") {
+        this.view.cancelGestures();
         return true;
       }
       return this.editor.handleKey(e);
@@ -1771,7 +1975,8 @@ export class JacquardUI {
     if (this.editor.canPlace) {
       body.append(el("div", "divider"));
       body.append(el("div", "caption",
-        "Press: ← → category, ↓ choose, release. Stay on Dismiss (top) to cancel."));
+        "Press: ← → category, ↓ choose, release. Dismiss cancels. " +
+        "Drag 𝄋 start / loop-end handles to reshape; stack them for a tape loop. Esc cancels drags."));
       const grid = el("div", "palette");
       for (const kind of KINDS) {
         grid.append(button(kind, () => {

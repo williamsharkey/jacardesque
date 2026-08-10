@@ -20,6 +20,7 @@ class App {
     this.store = new ProjectStore();
     const boot = this.store.bootstrap();
     this.project = boot.project || Project.createEmpty();
+    this.project.syncGrid();
     this.sequencer = new Sequencer();
     this.sequencer.project = this.project;
     this.audio = new AudioEngine({ maxVoices: MAX_VOICES, lookahead: LOOKAHEAD });
@@ -115,6 +116,7 @@ class App {
     if (!playing) this.sequencer.stop();
 
     this.project = project;
+    this.project.syncGrid();
     this.sequencer.project = project;
     this.editor.project = project;
     if (this.audio.ready) this.audio.setFx(this.project.fx, this.project.tempo);
