@@ -36,6 +36,7 @@ import {
   triggerAdjacentToAnyLane,
   triggerOwnerLabel,
   triggerActionLabel,
+  triggerOwnerColor,
 } from "./fx-model.js";
 import {
   ensureInstruments,
@@ -2292,31 +2293,37 @@ export class ScoreView {
     ctx.save();
     ctx.globalAlpha = alpha;
 
-    let fill = "#a3a3a3";
-    if (trig.kind === "on") fill = firing ? "#86efac" : "#4ade80";
-    else if (trig.kind === "off") fill = firing ? "#fca5a5" : "#f87171";
-    else if (trig.kind === "chan") fill = firing ? "#a5f3fc" : "#22d3ee";
-    else if (trig.kind === "pat+" || trig.kind === "pat-" || trig.kind === "patgo") {
-      fill = firing ? "#c4b5fd" : "#a78bfa";
-    } else fill = firing ? "#fde68a" : "#fbbf24";
+    // Chip color matches owner instrument / FX (not generic kind hues)
+    const base = triggerOwnerColor(this.score, trig);
+    let fill = base;
+    if (firing) fill = base; // pulse via shadow
+    // ON/OFF: keep owner hue but dim/bright; text still says ON/OFF
+    if (trig.kind === "off") {
+      // slightly darker owner tint
+      fill = base;
+    }
 
     const action = triggerActionLabel(trig);
     const owner = triggerOwnerLabel(this.score, trig);
 
     if (firing) {
-      ctx.shadowColor = fill;
+      ctx.shadowColor = base;
       ctx.shadowBlur = 10 + 6 * pulse;
     }
     const r = Style.cellRect(trig);
     roundRect(ctx, r.x + 2, r.y + 3, r.w - 4, r.h - 6, 4);
     ctx.fillStyle = fill;
     ctx.fill();
-    ctx.strokeStyle = selected ? "#fff" : withAlpha("#000", 0.35);
-    ctx.lineWidth = selected ? 1.5 : 1;
+    // Kind accent: green/red edge for ON/OFF, dark edge otherwise
+    if (trig.kind === "on") ctx.strokeStyle = selected ? "#fff" : "#14532d";
+    else if (trig.kind === "off") ctx.strokeStyle = selected ? "#fff" : "#7f1d1d";
+    else ctx.strokeStyle = selected ? "#fff" : withAlpha("#000", 0.35);
+    ctx.lineWidth = selected ? 1.5 : (trig.kind === "on" || trig.kind === "off" ? 1.5 : 1);
     ctx.stroke();
     ctx.shadowBlur = 0;
 
     // Two-line label: action (ON / .5 / P+) + owner (DLY / HH / PAT)
+    // Dark ink on light-ish chips; light ink if fill is dark enough
     ctx.fillStyle = "#1c1917";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";

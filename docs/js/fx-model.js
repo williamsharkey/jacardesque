@@ -195,6 +195,45 @@ export function triggerOwnerLabel(score, trig) {
   return (FxTypes[mod.type]?.label || mod.type || "?").slice(0, 3);
 }
 
+/**
+ * Face color for a trigger chip — matches owner instrument / FX, not kind alone.
+ * Kind (ON/OFF/value) still reads from the action text.
+ */
+export function triggerOwnerColor(score, trig) {
+  ensureFxLists(score);
+  if (trig.kind === "pat+" || trig.kind === "pat-" || trig.kind === "patgo") {
+    return "#a78bfa";
+  }
+  if (trig.kind === "chan") {
+    const inst = (score.instruments || []).find(
+      (m) => (m.channel | 0) === (trig.channel | 0),
+    );
+    if (inst) {
+      // Same palette as instrumentColor (mirrored to avoid circular import)
+      const palette = [
+        "#38bdf8", "#a78bfa", "#34d399", "#fbbf24",
+        "#f472b6", "#2dd4bf", "#fb923c", "#e879f9",
+      ];
+      let h = 0;
+      const s = String(inst.id || inst.type || "");
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+      return palette[Math.abs(h) % palette.length];
+    }
+    return "#22d3ee";
+  }
+  const mod = score.fxModules.find((m) => m.id === trig.targetFxId);
+  if (!mod) return "#a3a3a3";
+  // FX type hues (stable, readable)
+  const fxHue = {
+    delay: "#818cf8",
+    reverb: "#a78bfa",
+    distort: "#f97316",
+    filter: "#34d399",
+    pan: "#38bdf8",
+  };
+  return fxHue[mod.type] || "#c4b5fd";
+}
+
 /** Primary action label on chip (ON, OFF, .5, P+, …). */
 export function triggerActionLabel(trig) {
   if (trig.kind === "on") return "ON";
