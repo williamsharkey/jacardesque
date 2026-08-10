@@ -21,6 +21,7 @@ import {
   findTriggerAt,
   removeFxModule,
   FxTypes,
+  autoParamDef,
   triggerAdjacentToAnyLane,
 } from "./fx-model.js";
 
@@ -476,17 +477,19 @@ export class ScoreEditor {
 
     switch (evt.key) {
       case "ArrowLeft":
-        this.moveCursor(-1, 0);
+        if (shift) this.nudgeSelected(-1, 0);
+        else this.moveCursor(-1, 0);
         return true;
       case "ArrowRight":
-        this.moveCursor(1, 0);
+        if (shift) this.nudgeSelected(1, 0);
+        else this.moveCursor(1, 0);
         return true;
       case "ArrowUp":
-        if (shift) this.transpose(command ? 12 : 1);
+        if (shift) this.nudgeSelected(0, -1);
         else this.moveCursor(0, -1);
         return true;
       case "ArrowDown":
-        if (shift) this.transpose(command ? -12 : -1);
+        if (shift) this.nudgeSelected(0, 1);
         else this.moveCursor(0, 1);
         return true;
       case "Delete":
@@ -500,10 +503,12 @@ export class ScoreEditor {
         return false; // transport handles space
       case "#":
       case "+":
-        this.transpose(1);
+      case "=": // unshifted + on many keyboards
+        this.incrementSelected(command ? 12 : 1);
         return true;
       case "-":
-        this.transpose(-1);
+      case "_":
+        this.incrementSelected(command ? -12 : -1);
         return true;
     }
     return false;
@@ -512,6 +517,160 @@ export class ScoreEditor {
   moveCursor(dx, dy) {
     const c = this.getCursor();
     this.setCursor(gp(c.x + dx, c.y + dy));
+  }
+
+  /** Shift+arrows: move selected FX / trigger / tile in place. */
+  nudgeSelected(dx, dy) {
+    ensureFxLists(this.score);
+    if (this.selectedFxId) {
+      const mod = this.score.fxModules.find((m) => m.id === this.selectedFxId);
+      if (mod && this.tryMoveFx(mod, mod.x + dx, mod.y + dy)) {
+        this.setCursor(gp(mod.x, mod.y));
+        this.commit();
+      }
+      return;
+    }
+    if (this.selectedAutoId) {
+      const trig = this.score.fxTriggers.find((t) => t.id === this.selectedAutoId);
+      if (trig) {
+        const np = this.score.wrap(gp(trig.x + dx, trig.y + dy));
+        if (this.isValidTriggerCell(np) ||
+            (np.x === trig.x && np.y === trig.y)) {
+          // Allow free empty cells
+          if (this.score.isFree(np) || findTriggerAt(this.score, np)?.id === trig.id) {
+            if (!findFxAt(this.score, np)) {
+              trig.x = np.x;
+              trig.y = np.y;
+              this.setCursor(np);
+              this.commit();
+            }
+          }
+        }
+      }
+      return;
+    }
+    const cell = this.cell;
+    if (cell.kind === CellKind.Tile && cell.lane) {
+      // Move along lane path by step for left/right; depth for up/down
+      if (dx !== 0) {
+        const step = cell.step + dx;
+        if (step < 0 || step >= cell.lane.steps.length) return;
+        const target = cell.lane.cellPoint(step, 0);
+        const source = {
+          kind: CellKind.Tile,
+          lane: cell.lane,
+          step: cell.step,
+          depth: cell.depth,
+          tile: cell.tile,
+        };
+        const move = this.score.planMove(source, target);
+        if (this.score.applyMove(source, move)) {
+          this.setCursor(cell.lane.cellPoint(step, Math.min(cell.depth, cell.lane.steps[step].depth)));
+          this.commit();
+        }
+      } else if (dy !== 0) {
+        // Reorder within stack
+        const tiles = cell.lane.steps[cell.step].tiles;
+        const ni = cell.depth + dy;
+        if (ni < 0 || ni >= tiles.length) return;
+        const [t] = tiles.splice(cell.depth, 1);
+        tiles.splice(ni, 0, t);
+        this.setCursor(cell.lane.cellPoint(cell.step, ni));
+        this.commit();
+      }
+      return;
+    }
+    if (cell.kind === CellKind.Head && cell.lane) {
+      const head = cell.lane.headPoint;
+      const dest = this.score.wrap(gp(head.x + dx, head.y + dy));
+      if (this.score.moveLane(cell.lane, dest)) {
+        this.setCursor(cell.lane.headPoint);
+        this.commit();
+      }
+    }
+  }
+
+  /**
+   * +/- : note pitch, trigger value, or first FX param when FX selected.
+   */
+  incrementSelected(delta) {
+    ensureFxLists(this.score);
+    if (this.selected instanceof NoteTile) {
+      this.transpose(delta);
+      return;
+    }
+    if (this.selectedAutoId) {
+      const trig = this.score.fxTriggers.find((t) => t.id === this.selectedAutoId);
+      if (trig && (trig.kind === "param" || trig.kind === "chan")) {
+        const def = autoParamDef(this.score, trig);
+        const span = (def?.max ?? 1) - (def?.min ?? 0);
+        const step = Math.abs(delta) >= 12 ? span * 0.1 : span * 0.02;
+        const s = delta > 0 ? step : -step;
+        let v = (trig.value || 0) + s;
+        v = Math.min(def?.max ?? 1, Math.max(def?.min ?? 0, v));
+        trig.value = v;
+        this.touch();
+        this.onChanged?.();
+      }
+      return;
+    }
+    if (this.selectedFxId) {
+      const mod = this.score.fxModules.find((m) => m.id === this.selectedFxId);
+      const def = FxTypes[mod?.type];
+      const p = def?.params?.[0];
+      if (mod && p) {
+        const span = p.max - p.min;
+        const step = Math.abs(delta) >= 12 ? span * 0.1 : span * 0.05;
+        const s = delta > 0 ? step : -step;
+        mod.params[p.key] = Math.min(p.max, Math.max(p.min, (mod.params[p.key] ?? p.def) + s));
+        this.touch();
+        this.onChanged?.();
+      }
+      return;
+    }
+    // Fallback: transpose note if any
+    this.transpose(delta);
+  }
+
+  /** True if fx module can occupy (x,y) without overlapping lanes/other FX. */
+  canPlaceFxAt(mod, x, y) {
+    ensureFxLists(this.score);
+    for (let dy = 0; dy < mod.h; dy++) {
+      for (let dx = 0; dx < mod.w; dx++) {
+        const p = this.score.wrap(gp(x + dx, y + dy));
+        if (!this.score.isFree(p)) return false;
+        const other = findFxAt(this.score, p);
+        if (other && other.id !== mod.id) return false;
+      }
+    }
+    return true;
+  }
+
+  tryMoveFx(mod, x, y) {
+    const W = this.score.gridW || 32;
+    const H = this.score.gridH || 16;
+    x = ((x % W) + W) % W;
+    y = ((y % H) + H) % H;
+    if (!this.canPlaceFxAt(mod, x, y)) return false;
+    mod.x = x;
+    mod.y = y;
+    return true;
+  }
+
+  /** Live preview while dragging (no commit). */
+  previewMoveFx(id, x, y) {
+    const mod = this.score.fxModules.find((m) => m.id === id);
+    if (!mod) return false;
+    return this.tryMoveFx(mod, x, y);
+  }
+
+  commitMoveFx(id, x, y) {
+    const mod = this.score.fxModules.find((m) => m.id === id);
+    if (!mod) return false;
+    if (!this.tryMoveFx(mod, x, y)) return false;
+    this.setCursor(gp(mod.x, mod.y));
+    this.commit();
+    return true;
   }
 }
 

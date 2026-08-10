@@ -28,6 +28,7 @@ import {
   findTriggerAt,
   autoParamDef,
   fxCenter,
+  fxOccupies,
   FxTypes,
   computeFxLiveState,
   formatAutoShort,
@@ -423,13 +424,14 @@ export class ScoreView {
     this._dropCells = [];
     this._ghostDelta = { x: 0, y: 0 };
     this._playheads = [];
-    this._dragCount = 1;
+    this._liftCount = 1;
     this._placing = false;
     this.placeMenu = null;
     /** Empty-ground morphic shell: { origin, phase:'shell'|'lane'|'object', path, cats, catIndex, itemIndex } */
     this._groundGesture = null;
     this._trigDrag = null;
     this._sliderDrag = null;
+    this._fxMoveDrag = null;
     this._panning = false;
     this._panArmed = false; // true only after drag exceeds threshold
     this._captureEl = null;
@@ -592,7 +594,7 @@ export class ScoreView {
     this.setCursor(point);
     ensureFxLists(this.score);
 
-    // FX widget hits: ON/OFF pads, param sliders (scrub or drag-out)
+    // FX widget hits: grip (move), ON/OFF pads, param sliders (scrub or drag-out)
     const fxHit = this._hitFxWidget(pos);
     if (fxHit) {
       e.preventDefault();
@@ -600,7 +602,17 @@ export class ScoreView {
       this.selectedAutoId = null;
       this.selectedPathId = null;
       this.onFxSelect?.(fxHit.fxId);
-      if (fxHit.kind === "on" || fxHit.kind === "off") {
+      if (fxHit.kind === "grip") {
+        const mod = this.score.fxModules.find((m) => m.id === fxHit.fxId);
+        this._fxMoveDrag = {
+          fxId: fxHit.fxId,
+          origin: pos,
+          startX: mod?.x ?? 0,
+          startY: mod?.y ?? 0,
+          grabCell: point,
+          armed: false,
+        };
+      } else if (fxHit.kind === "on" || fxHit.kind === "off") {
         this._trigDrag = {
           kind: fxHit.kind,
           fxId: fxHit.fxId,
@@ -609,16 +621,29 @@ export class ScoreView {
           insideFx: true,
         };
       } else if (fxHit.kind === "slider") {
+        // Immediate scrub to click position; drag-out when leaving the pedal
+        const mod = this.score.fxModules.find((m) => m.id === fxHit.fxId);
+        const def = FxTypes[mod?.type];
+        const p = def?.params?.find((x) => x.key === fxHit.paramKey);
+        let value = fxHit.hitValue;
+        if (mod && p) {
+          value = Math.min(p.max, Math.max(p.min, fxHit.hitValue));
+          mod.params[fxHit.paramKey] = value;
+        }
         this._sliderDrag = {
           fxId: fxHit.fxId,
           paramKey: fxHit.paramKey,
           bar: fxHit.bar,
           origin: pos,
-          value: fxHit.value,
-          scrubbing: false,
+          value,
+          scrubbing: true,
           draggingOut: false,
+          insideFx: true,
           point,
         };
+        this._capture(this.canvas, e.pointerId);
+        this.paint();
+        return;
       }
       this._capture(this.canvas, e.pointerId);
       this.paint();
@@ -659,7 +684,7 @@ export class ScoreView {
       return;
     }
 
-    // Hit FX module body (select only — no chain drag)
+    // Hit FX module body (select; drag from grip to move — body click selects)
     const fx = findFxAt(this.score, point);
     if (fx) {
       e.preventDefault();
@@ -667,6 +692,16 @@ export class ScoreView {
       this.selectedAutoId = null;
       this.selectedPathId = null;
       this.onFxSelect?.(fx.id);
+      // Allow dragging whole pedal from body if not on a control (pattern modules, etc.)
+      this._fxMoveDrag = {
+        fxId: fx.id,
+        origin: pos,
+        startX: fx.x,
+        startY: fx.y,
+        grabCell: point,
+        armed: false,
+      };
+      this._capture(this.canvas, e.pointerId);
       this.paint();
       return;
     }
@@ -751,7 +786,7 @@ export class ScoreView {
   _pointerMove(e) {
     // Hover tooltip when idle (no drag gesture)
     if (
-      !this._loopDrag && !this._trigDrag && !this._sliderDrag &&
+      !this._loopDrag && !this._trigDrag && !this._sliderDrag && !this._fxMoveDrag &&
       !this._placing && !this._groundGesture && !this._panning && !this._grabbed
     ) {
       this._updateHoverTip(this.localPoint(e));
@@ -763,12 +798,36 @@ export class ScoreView {
       return;
     }
 
+    if (this._fxMoveDrag) {
+      const pos = this.localPoint(e);
+      const d = this._fxMoveDrag;
+      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
+      if (!d.armed) {
+        if (dist < 5) return;
+        d.armed = true;
+      }
+      const point = Style.cellAt(pos);
+      const dx = point.x - d.grabCell.x;
+      const dy = point.y - d.grabCell.y;
+      const nx = d.startX + dx;
+      const ny = d.startY + dy;
+      d.hoverX = nx;
+      d.hoverY = ny;
+      // Live preview: apply if free, else keep last good
+      if (this.onFxMovePreview?.(d.fxId, nx, ny)) {
+        d.lastX = nx;
+        d.lastY = ny;
+      }
+      this.paint();
+      return;
+    }
+
     if (this._trigDrag) {
       const pos = this.localPoint(e);
       const point = Style.cellAt(pos);
       this._trigDrag.point = point;
       const mod = this.score.fxModules.find((m) => m.id === this._trigDrag.fxId);
-      this._trigDrag.insideFx = mod ? fxOccupies(mod, point) : false;
+      this._trigDrag.insideFx = mod ? this._pointInFxPixels(mod, pos) : false;
       this.paint();
       return;
     }
@@ -776,35 +835,38 @@ export class ScoreView {
     if (this._sliderDrag) {
       const pos = this.localPoint(e);
       const d = this._sliderDrag;
-      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
       const mod = this.score.fxModules.find((m) => m.id === d.fxId);
-      const point = Style.cellAt(pos);
+      const point = this.score.wrap(Style.cellAt(pos));
       d.point = point;
-      const inside = mod ? fxOccupies(mod, point) : false;
+      const inside = mod ? this._pointInFxPixels(mod, pos) : false;
+      d.insideFx = inside;
+      const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
 
-      if (!d.draggingOut && !d.scrubbing) {
-        // Vertical leave → drag-out trigger; horizontal → scrub
-        if (dist > 6) {
-          const dy = Math.abs(pos.y - d.origin.y);
-          const dx = Math.abs(pos.x - d.origin.x);
-          if (dy > dx + 4 && !inside) {
-            d.draggingOut = true;
-          } else {
-            d.scrubbing = true;
-          }
+      // Leave the pedal (or drag far) → drag-out a param trigger chip
+      if ((!inside && dist > 6) || dist > Math.max(40, (d.bar?.w || 40) * 0.6)) {
+        // Prefer drag-out when clearly outside; if still inside but moved a lot
+        // vertically, also allow drag-out
+        const dy = Math.abs(pos.y - d.origin.y);
+        const dx = Math.abs(pos.x - d.origin.x);
+        if (!inside || (dy > dx + 12 && dy > 16)) {
+          d.draggingOut = true;
+          d.scrubbing = false;
         }
       }
-      if (d.scrubbing && d.bar) {
+
+      if (!d.draggingOut && d.bar && mod) {
+        d.scrubbing = true;
         const t = Math.min(1, Math.max(0, (pos.x - d.bar.x) / (d.bar.w || 1)));
-        const def = FxTypes[mod?.type];
+        const def = FxTypes[mod.type];
         const p = def?.params?.find((x) => x.key === d.paramKey);
-        if (mod && p) {
-          mod.params[d.paramKey] = p.min + t * (p.max - p.min);
-          this.onFxParamChanged?.();
+        if (p) {
+          const v = p.min + t * (p.max - p.min);
+          mod.params[d.paramKey] = v;
+          d.value = v;
+          // Lightweight repaint only — avoid full commit/resync mid-scrub
+          this.paint();
+          return;
         }
-      }
-      if (d.draggingOut) {
-        d.insideFx = inside;
       }
       this.paint();
       return;
@@ -878,6 +940,17 @@ export class ScoreView {
       } else if (d.snap) {
         // Click without drag — restore any accidental preview
         d.lane.restore(d.snap);
+      }
+      this.paint();
+      return;
+    }
+    if (this._fxMoveDrag) {
+      const d = this._fxMoveDrag;
+      this._fxMoveDrag = null;
+      if (d.armed) {
+        const x = d.lastX ?? d.startX;
+        const y = d.lastY ?? d.startY;
+        this.onFxMoved?.(d.fxId, x, y);
       }
       this.paint();
       return;
@@ -1108,9 +1181,18 @@ export class ScoreView {
     if (this._loopDrag?.snap) {
       this._loopDrag.lane.restore(this._loopDrag.snap);
     }
+    if (this._fxMoveDrag) {
+      const d = this._fxMoveDrag;
+      const mod = this.score?.fxModules?.find((m) => m.id === d.fxId);
+      if (mod) {
+        mod.x = d.startX;
+        mod.y = d.startY;
+      }
+    }
     this._loopDrag = null;
     this._trigDrag = null;
     this._sliderDrag = null;
+    this._fxMoveDrag = null;
     this._panning = false;
     this._panArmed = false;
     this._endDrag();
@@ -1124,7 +1206,7 @@ export class ScoreView {
     this._ghostDelta = { x: 0, y: 0 };
   }
 
-  _dragCount(target) {
+  _countLiftedTiles(target) {
     if (!this._grabbed || this._grabbed.kind === CellKind.Head) return 0;
     const drop = this.score.dropLane(target);
     if (drop && drop.lane === this._grabbed.lane && drop.step === this._grabbed.step) return 1;
@@ -1144,7 +1226,7 @@ export class ScoreView {
         }
       }
     } else {
-      this._dragCount = this._dragCount(this._dropPoint);
+      this._liftCount = this._countLiftedTiles(this._dropPoint);
       const move = this.score.planMove(this._grabbed, this._dropPoint);
       if (move) {
         for (let i = 0; i < move.count; i++) {
@@ -1360,45 +1442,105 @@ export class ScoreView {
     }
   }
 
-  /** Hit ON/OFF pads or param sliders on any FX module. */
+  /** Pixel rect of an FX module on the canvas. */
+  _fxPixelRect(mod) {
+    const o = Style.cellOrigin({ x: mod.x, y: mod.y });
+    return {
+      x: o.x,
+      y: o.y,
+      w: mod.w * Style.StrideX - Style.Gap,
+      h: mod.h * Style.StrideY - Style.Gap,
+    };
+  }
+
+  _pointInFxPixels(mod, pos) {
+    const r = this._fxPixelRect(mod);
+    // Small pad so "leave pedal" for drag-out is unambiguous
+    return pos.x >= r.x && pos.x <= r.x + r.w &&
+      pos.y >= r.y && pos.y <= r.y + r.h;
+  }
+
+  /**
+   * Shared layout for FX chrome — hit-testing and drawing MUST use this.
+   * Top strip: [ON 24] [grip flex] [OFF 24]
+   * Then param rows of 18px each.
+   */
+  _fxLayout(mod) {
+    const def = FxTypes[mod.type] || FxTypes.delay;
+    const o = Style.cellOrigin({ x: mod.x, y: mod.y });
+    const w = mod.w * Style.StrideX - Style.Gap;
+    const h = mod.h * Style.StrideY - Style.Gap;
+    const isPat = !!def.patternOp;
+    const pad = 4;
+    const topH = 18;
+    const onW = 26;
+    const offW = 26;
+    const on = { x: o.x + pad, y: o.y + pad, w: onW, h: topH };
+    const off = { x: o.x + w - pad - offW, y: o.y + pad, w: offW, h: topH };
+    const grip = isPat
+      ? { x: o.x + pad, y: o.y + pad, w: w - pad * 2, h: topH }
+      : {
+        x: on.x + on.w + 3,
+        y: o.y + pad,
+        w: Math.max(16, off.x - (on.x + on.w + 6)),
+        h: topH,
+      };
+    const bars = [];
+    let y = o.y + pad + topH + 4;
+    const rowH = 18;
+    for (const p of def.params || []) {
+      bars.push({
+        key: p.key,
+        label: p.label,
+        min: p.min,
+        max: p.max,
+        def: p.def,
+        row: { x: o.x + pad, y, w: w - pad * 2, h: rowH },
+        bar: { x: o.x + pad + 2, y: y + 3, w: w - pad * 2 - 4, h: 12 },
+      });
+      y += rowH;
+    }
+    return { def, o, w, h, isPat, on, off, grip, bars, pad, topH };
+  }
+
+  _hitRect(pos, r) {
+    return pos.x >= r.x && pos.x <= r.x + r.w &&
+      pos.y >= r.y && pos.y <= r.y + r.h;
+  }
+
+  /** Hit grip, ON/OFF pads, or param sliders on any FX module. */
   _hitFxWidget(pos) {
     if (!this.score) return null;
     ensureFxLists(this.score);
     for (let i = this.score.fxModules.length - 1; i >= 0; i--) {
       const mod = this.score.fxModules[i];
-      const def = FxTypes[mod.type] || FxTypes.delay;
-      if (def.patternOp) continue;
-      const o = Style.cellOrigin({ x: mod.x, y: mod.y });
-      const w = mod.w * Style.StrideX - Style.Gap;
-      const h = mod.h * Style.StrideY - Style.Gap;
-      // ON pad top-left
-      const onR = { x: o.x + 4, y: o.y + 3, w: 22, h: 14 };
-      if (pos.x >= onR.x && pos.x <= onR.x + onR.w && pos.y >= onR.y && pos.y <= onR.y + onR.h) {
-        return { kind: "on", fxId: mod.id };
-      }
-      // OFF pad top-right
-      const offR = { x: o.x + w - 26, y: o.y + 3, w: 22, h: 14 };
-      if (pos.x >= offR.x && pos.x <= offR.x + offR.w && pos.y >= offR.y && pos.y <= offR.y + offR.h) {
-        return { kind: "off", fxId: mod.id };
-      }
-      // Param sliders
-      let y = o.y + 22;
-      for (const p of def.params) {
-        const bar = { x: o.x + 6, y, w: w - 12, h: 12 };
-        if (pos.x >= bar.x && pos.x <= bar.x + bar.w && pos.y >= bar.y && pos.y <= bar.y + bar.h) {
-          const t = Math.min(1, Math.max(0, (pos.x - bar.x) / bar.w));
-          const value = p.min + t * (p.max - p.min);
-          return {
-            kind: "slider",
-            fxId: mod.id,
-            paramKey: p.key,
-            value: mod.params[p.key] ?? p.def,
-            bar,
-            hitValue: value,
-          };
+      const L = this._fxLayout(mod);
+      // Outside module?
+      if (pos.x < L.o.x || pos.x > L.o.x + L.w ||
+          pos.y < L.o.y || pos.y > L.o.y + L.h) continue;
+
+      // Param sliders first (most of the body) — generous row hit
+      if (!L.isPat) {
+        for (const row of L.bars) {
+          if (this._hitRect(pos, row.row)) {
+            const t = Math.min(1, Math.max(0, (pos.x - row.bar.x) / (row.bar.w || 1)));
+            const hitValue = row.min + t * (row.max - row.min);
+            return {
+              kind: "slider",
+              fxId: mod.id,
+              paramKey: row.key,
+              value: mod.params[row.key] ?? row.def,
+              bar: row.bar,
+              hitValue,
+            };
+          }
         }
-        y += 16;
+        if (this._hitRect(pos, L.on)) return { kind: "on", fxId: mod.id };
+        if (this._hitRect(pos, L.off)) return { kind: "off", fxId: mod.id };
       }
+      if (this._hitRect(pos, L.grip)) return { kind: "grip", fxId: mod.id };
+      // Anywhere else on the pedal = grip/move
+      return { kind: "grip", fxId: mod.id };
     }
     return null;
   }
@@ -1532,26 +1674,27 @@ export class ScoreView {
   }
 
   _drawFxModule(ctx, mod, selected, live, pulse) {
-    const o = Style.cellOrigin({ x: mod.x, y: mod.y });
-    const w = mod.w * Style.StrideX - Style.Gap;
-    const h = mod.h * Style.StrideY - Style.Gap;
-    const def = FxTypes[mod.type] || FxTypes.delay;
-    const isPat = !!def.patternOp;
-    const on = !!mod.on;
+    const L = this._fxLayout(mod);
+    const { def, o, w, h, isPat, on: onR, off: offR, grip, bars } = L;
+    const powered = !!mod.on;
     const patternOn = !!live?.activePatternIds?.has(mod.id);
-    const dim = !isPat && !on;
 
+    // Body (never dim controls below — only tint body when bypassed)
     ctx.save();
-    ctx.globalAlpha = dim ? 0.5 : 1;
-
     ctx.fillStyle = selected
       ? (isPat ? "#1a2e24" : "#2a2438")
       : (isPat ? "#152018" : "#1e1e28");
-    ctx.strokeStyle = (on || patternOn || selected)
-      ? (isPat ? "#6ee7b7" : "#c4b5fd")
-      : (isPat ? "#3f6b55" : "#6d6a7a");
-    ctx.lineWidth = selected || on ? 1.8 : 1;
-    if (on || patternOn) {
+    if (!isPat && !powered) ctx.globalAlpha = 0.72;
+    ctx.strokeStyle = selected
+      ? (isPat ? "#6ee7b7" : "#e9e5ff")
+      : (powered || patternOn
+        ? (isPat ? "#6ee7b7" : "#c4b5fd")
+        : (isPat ? "#3f6b55" : "#6d6a7a"));
+    ctx.lineWidth = selected ? 2.5 : (powered || patternOn ? 1.8 : 1);
+    if (selected) {
+      ctx.shadowColor = "#f2f2ee";
+      ctx.shadowBlur = 10;
+    } else if (powered || patternOn) {
       ctx.shadowColor = isPat ? "#34d399" : "#a78bfa";
       ctx.shadowBlur = 8 + 4 * pulse;
     }
@@ -1559,37 +1702,72 @@ export class ScoreView {
     ctx.fill();
     ctx.stroke();
     ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    // Selection ring (replaces cell cursor for multi-cell objects)
+    if (selected) {
+      ctx.strokeStyle = "#f2f2ee";
+      ctx.lineWidth = 2;
+      roundRect(ctx, o.x - 3, o.y - 3, w + 6, h + 6, 8);
+      ctx.stroke();
+    }
 
     if (!isPat) {
-      // ON pad
-      ctx.fillStyle = on ? "#4ade80" : "#3f3f46";
-      roundRect(ctx, o.x + 4, o.y + 3, 22, 14, 3);
+      // ON
+      ctx.fillStyle = powered ? "#4ade80" : "#3f3f46";
+      roundRect(ctx, onR.x, onR.y, onR.w, onR.h, 3);
       ctx.fill();
-      ctx.fillStyle = on ? "#14532d" : "#a1a1aa";
-      ctx.font = "700 8px system-ui,sans-serif";
+      ctx.strokeStyle = powered ? "#bbf7d0" : "#52525b";
+      ctx.lineWidth = 1;
+      roundRect(ctx, onR.x + 0.5, onR.y + 0.5, onR.w - 1, onR.h - 1, 3);
+      ctx.stroke();
+      ctx.fillStyle = powered ? "#14532d" : "#d4d4d8";
+      ctx.font = "700 9px system-ui,sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("ON", o.x + 15, o.y + 10);
-      // OFF pad
-      ctx.fillStyle = !on ? "#f87171" : "#3f3f46";
-      roundRect(ctx, o.x + w - 26, o.y + 3, 22, 14, 3);
+      ctx.fillText("ON", onR.x + onR.w / 2, onR.y + onR.h / 2);
+
+      // OFF
+      ctx.fillStyle = !powered ? "#f87171" : "#3f3f46";
+      roundRect(ctx, offR.x, offR.y, offR.w, offR.h, 3);
       ctx.fill();
-      ctx.fillStyle = !on ? "#7f1d1d" : "#a1a1aa";
-      ctx.fillText("OFF", o.x + w - 15, o.y + 10);
+      ctx.strokeStyle = !powered ? "#fecaca" : "#52525b";
+      roundRect(ctx, offR.x + 0.5, offR.y + 0.5, offR.w - 1, offR.h - 1, 3);
+      ctx.stroke();
+      ctx.fillStyle = !powered ? "#7f1d1d" : "#d4d4d8";
+      ctx.fillText("OFF", offR.x + offR.w / 2, offR.y + offR.h / 2);
+
+      // Grip — bright so it's obvious
+      ctx.fillStyle = selected ? "#71717a" : "#52525b";
+      roundRect(ctx, grip.x, grip.y, grip.w, grip.h, 3);
+      ctx.fill();
+      ctx.strokeStyle = "#a1a1aa";
+      ctx.lineWidth = 1;
+      roundRect(ctx, grip.x + 0.5, grip.y + 0.5, grip.w - 1, grip.h - 1, 3);
+      ctx.stroke();
+      const gcx = grip.x + grip.w / 2;
+      const gcy = grip.y + grip.h / 2;
+      ctx.fillStyle = "#e4e4e7";
+      for (let col = -2; col <= 2; col++) {
+        for (let row = -1; row <= 1; row++) {
+          ctx.beginPath();
+          ctx.arc(gcx + col * 3.5, gcy + row * 3.5, 1.15, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    } else {
+      ctx.fillStyle = selected ? "#3f6b55" : "#2a4034";
+      roundRect(ctx, grip.x, grip.y, grip.w, grip.h, 3);
+      ctx.fill();
+      ctx.fillStyle = "#86efac";
+      ctx.font = "600 9px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(def.label + " · drag", grip.x + grip.w / 2, grip.y + grip.h / 2);
     }
 
-    ctx.fillStyle = isPat ? "#d1fae5" : "#e9e5ff";
-    ctx.font = "700 11px system-ui,sans-serif";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    ctx.fillText(def.label, o.x + (isPat ? 6 : 30), o.y + 4);
-    if (mod.type === "patgo") {
-      ctx.font = "600 10px system-ui,sans-serif";
-      ctx.fillText("#" + ((mod.params.n | 0) + 1), o.x + 6, o.y + 20);
-    }
-
+    // Param bars
     const liveP = live?.liveParams?.get(mod.id) || mod.params;
-    // Marker ticks for every param trigger of this module
     const ticksByParam = new Map();
     for (const t of this.score.fxTriggers) {
       if (t.targetFxId !== mod.id || t.kind !== "param") continue;
@@ -1597,39 +1775,41 @@ export class ScoreView {
       ticksByParam.get(t.paramKey).push(t.value);
     }
 
-    let y = o.y + 22;
-    const hover = this._hoverTip?.kind === "fx" && this._hoverTip?.id === mod.id;
-    for (const p of def.params) {
-      const val = liveP[p.key] ?? mod.params[p.key] ?? p.def;
-      const t = (val - p.min) / (p.max - p.min || 1);
-      const barW = w - 12;
-      // Hover lift
-      const lift = hover ? 1 : 0;
-      ctx.fillStyle = "#2f2f3a";
-      ctx.fillRect(o.x + 6, y - lift, barW, 10 + lift);
+    for (const row of bars) {
+      const val = liveP[row.key] ?? mod.params[row.key] ?? row.def;
+      const t = (val - row.min) / (row.max - row.min || 1);
+      const b = row.bar;
+      ctx.fillStyle = "#18181b";
+      roundRect(ctx, b.x, b.y, b.w, b.h, 2);
+      ctx.fill();
       ctx.fillStyle = "#8b7cf7";
-      ctx.fillRect(o.x + 6, y - lift, Math.max(2, barW * Math.min(1, Math.max(0, t))), 10 + lift);
-      // Tick marks for dragged-off values
-      const ticks = ticksByParam.get(p.key) || [];
-      for (const tv of ticks) {
-        const tt = (tv - p.min) / (p.max - p.min || 1);
-        const tx = o.x + 6 + barW * Math.min(1, Math.max(0, tt));
+      const fw = Math.max(2, b.w * Math.min(1, Math.max(0, t)));
+      roundRect(ctx, b.x, b.y, fw, b.h, 2);
+      ctx.fill();
+      // ticks
+      for (const tv of ticksByParam.get(row.key) || []) {
+        const tt = (tv - row.min) / (row.max - row.min || 1);
+        const tx = b.x + b.w * Math.min(1, Math.max(0, tt));
         ctx.strokeStyle = "#fde68a";
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(tx, y - 1 - lift);
-        ctx.lineTo(tx, y + 11 + lift);
+        ctx.moveTo(tx, b.y - 1);
+        ctx.lineTo(tx, b.y + b.h + 1);
         ctx.stroke();
       }
-      ctx.fillStyle = "#d4d4d8";
+      ctx.fillStyle = "#e4e4e7";
       ctx.font = "600 8px system-ui,sans-serif";
       ctx.textAlign = "left";
-      ctx.textBaseline = "top";
-      ctx.fillText(p.label + " " + formatAutoShort(p.key, val), o.x + 8, y - lift);
-      y += 16;
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        row.label + " " + formatAutoShort(row.key, val),
+        b.x + 3,
+        b.y + b.h / 2,
+      );
     }
     ctx.restore();
   }
+
 
   _drawHoverTip(ctx, tip) {
     const pad = 6;
@@ -1686,6 +1866,22 @@ export class ScoreView {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(short, o.x, o.y);
+    }
+    if (this._fxMoveDrag?.armed) {
+      const mod = this.score.fxModules.find((m) => m.id === this._fxMoveDrag.fxId);
+      if (mod) {
+        const x = this._fxMoveDrag.hoverX ?? mod.x;
+        const y = this._fxMoveDrag.hoverY ?? mod.y;
+        const o = Style.cellOrigin({ x, y });
+        const w = mod.w * Style.StrideX - Style.Gap;
+        const h = mod.h * Style.StrideY - Style.Gap;
+        ctx.strokeStyle = withAlpha("#c4b5fd", 0.9);
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        roundRect(ctx, o.x, o.y, w, h, 6);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
   }
 
@@ -1946,7 +2142,7 @@ export class ScoreView {
       return this._grabbed.lane === lane;
     }
     if (this._grabbed.lane !== lane || this._grabbed.step !== step) return false;
-    const count = this._dragCount;
+    const count = this._liftCount;
     return depth >= this._grabbed.depth && depth < this._grabbed.depth + count;
   }
 
@@ -1981,11 +2177,18 @@ export class ScoreView {
   }
 
   _drawCursor(ctx) {
-    const r = Style.cellRect(this.cursor);
-    ctx.strokeStyle = Style.Cursor;
-    ctx.lineWidth = 1;
-    roundRect(ctx, r.x - 2.5, r.y - 2.5, r.w + 5, r.h + 5, Style.Radius + 2);
-    ctx.stroke();
+    // When an FX pedal is selected, selection ring is drawn on the module itself
+    // — never paint a single-cell cursor on top of multi-cell objects.
+    ensureFxLists(this.score);
+    if (this.selectedFxId) {
+      // optional: no cell outline at all while FX is selected
+    } else {
+      const r = Style.cellRect(this.cursor);
+      ctx.strokeStyle = Style.Cursor;
+      ctx.lineWidth = 1;
+      roundRect(ctx, r.x - 2.5, r.y - 2.5, r.w + 5, r.h + 5, Style.Radius + 2);
+      ctx.stroke();
+    }
 
     // While the place menu is open, fill the target cell so the "empty slot" is obvious.
     if (this._placing && this.placeMenu?.point) {
@@ -2030,7 +2233,7 @@ export class ScoreView {
       }
     } else {
       const tiles = this._grabbed.lane.steps[this._grabbed.step].tiles;
-      const count = this._dragCount;
+      const count = this._liftCount;
       for (let i = 0; i < count; i++) {
         this._drawTile(
           ctx,
@@ -2517,6 +2720,14 @@ export class JacquardUI {
         this.editor.touch();
         this.view.paint();
       }
+    };
+    this.view.onFxMovePreview = (id, x, y) => {
+      const ok = this.editor.previewMoveFx(id, x, y);
+      if (ok) this.view.paint();
+      return ok;
+    };
+    this.view.onFxMoved = (id, x, y) => {
+      this.editor.commitMoveFx(id, x, y);
     };
     this.view.onIsValidTrigger = (point) => this.editor.isValidTriggerCell(point);
     this.view.onCursorMoved = () => this.refreshPanels();

@@ -10,7 +10,7 @@ const CURRENT_KEY = "jacquardesque:v4:current";
 const SEEDED_KEY = "jacquardesque:v4:seeded";
 /** Bump to rewrite factory sketch bodies (user-named sketches stay). */
 const FACTORY_REV_KEY = "jacquardesque:v4:factoryRev";
-const FACTORY_REV = "showcase-10-v1";
+const FACTORY_REV = "fx-controls-2";
 
 const ALL_FACTORY = [...FACTORY_SKETCHES, ...FX_FACTORY_SKETCHES];
 

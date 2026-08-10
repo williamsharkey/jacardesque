@@ -15,7 +15,7 @@ export const FxTypes = {
     label: "DLY",
     name: "Delay",
     w: 4,
-    h: 3,
+    h: 4, // room for ON/OFF/grip + 4 param bars
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 0.35 },
       { key: "time", label: "Time", min: 0.05, max: 1.5, def: 0.35 },
@@ -38,7 +38,7 @@ export const FxTypes = {
     label: "DST",
     name: "Distort",
     w: 3,
-    h: 2,
+    h: 3,
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 0.4 },
       { key: "drive", label: "Drive", min: 0, max: 1, def: 0.45 },
@@ -48,7 +48,7 @@ export const FxTypes = {
     label: "FLT",
     name: "Filter",
     w: 3,
-    h: 2,
+    h: 3,
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 1 },
       { key: "cutoff", label: "Cut", min: 0, max: 1, def: 0.55 },
@@ -59,7 +59,7 @@ export const FxTypes = {
     label: "PAN",
     name: "Pan",
     w: 3,
-    h: 2,
+    h: 3,
     params: [
       { key: "mix", label: "Mix", min: 0, max: 1, def: 1 },
       { key: "pan", label: "Pan", min: -1, max: 1, def: 0 },
@@ -201,6 +201,12 @@ export function ensureFxLists(score) {
   }
   for (const m of score.fxModules) {
     if (m.on == null) m.on = false;
+    // Keep footprint in sync with type definition (layout for controls)
+    const def = FxTypes[m.type];
+    if (def) {
+      m.w = def.w;
+      m.h = def.h;
+    }
   }
   return score;
 }

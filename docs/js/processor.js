@@ -549,6 +549,7 @@ function softClip(x) {
 }
 
 function clamp01(x) {
+  if (!Number.isFinite(x)) return 0;
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
@@ -774,6 +775,9 @@ class GridFxGraph {
    * Insert mode: serial process dryL/R through ON pedals (mix→0 when off).
    * ~10-sample linear ramp on engage/bypass to avoid clicks.
    * Result written back into dryL/R; wet left unused for grid inserts.
+   *
+   * Critical: fully-bypassed pedals must not touch the chain (and must never
+   * blend with non-finite wet — `NaN * 0` is NaN and silences the master).
    */
   process(channelMono, dryL, dryR, wetL, wetR, n) {
     if (!this.enabled) return;
@@ -792,49 +796,59 @@ class GridFxGraph {
     const RAMP = 10; // samples
     for (const id of this.order) {
       const rt = this.modules.get(id);
-      if (!rt) continue;
-      rt.ensure(n);
+      if (!rt || !rt.engine) continue;
 
-      // Target engage amount: 1 when on, 0 when off (then scale by param mix)
       const want = rt.targetOn ? 1 : 0;
-      let g = rt.mixGain;
+      let g = Number.isFinite(rt.mixGain) ? rt.mixGain : 0;
+      // Fully bypassed: leave the dry chain untouched (no NaN wet bleed).
+      if (want === 0 && g < 1e-4) {
+        rt.mixGain = 0;
+        continue;
+      }
+
+      rt.ensure(n);
       const step = (want - g) / RAMP;
 
-      // Feed current chain signal into module
       for (let i = 0; i < n; i++) {
         rt.inL[i] = workL[i];
         rt.inR[i] = workR[i];
       }
-      // Clear outs then process full wet engine
       rt.outL.fill(0, 0, n);
       rt.outR.fill(0, 0, n);
 
-      // Temporarily force full wet capture for insert blend
-      const savedMix = rt.params.mix;
-      const p = { ...rt.params, mix: 1 };
-      rt.params = p;
+      // Process as full wet; we blend with user mix * engage ramp below.
+      const savedMix = Number.isFinite(rt.params?.mix) ? rt.params.mix : 0.35;
+      const prevParams = rt.params;
+      rt.params = { ...prevParams, mix: 1 };
       this._processInsertWet(rt, n);
-      rt.params = { ...rt.params, mix: savedMix };
+      rt.params = prevParams;
 
-      const userMix = clamp01(savedMix ?? 0.35);
+      const userMix = clamp01(savedMix);
       for (let i = 0; i < n; i++) {
         if (Math.abs(want - g) > 1e-6) {
           g += step;
           if ((step > 0 && g > want) || (step < 0 && g < want)) g = want;
         }
-        // effective wet amount = engage ramp * user mix
-        const m = g * userMix;
-        // out = dry*(1-m) + wet*m  where wet is fully processed signal
-        // For delay/reverb engines that already bake mix, we forced mix=1 so out is wet.
-        const wetL_i = rt.outL[i];
-        const wetR_i = rt.outR[i];
-        tmpL[i] = workL[i] * (1 - m) + wetL_i * m;
-        tmpR[i] = workR[i] * (1 - m) + wetR_i * m;
+        const m = clamp01(g * userMix);
+        const dry = workL[i];
+        const dryR0 = workR[i];
+        if (m <= 1e-6) {
+          tmpL[i] = dry;
+          tmpR[i] = dryR0;
+          continue;
+        }
+        // Finite-safe wet (NaN * m would silence the whole bus)
+        let wl = rt.outL[i];
+        let wr = rt.outR[i];
+        if (!Number.isFinite(wl)) wl = 0;
+        if (!Number.isFinite(wr)) wr = 0;
+        tmpL[i] = dry * (1 - m) + wl * m;
+        tmpR[i] = dryR0 * (1 - m) + wr * m;
       }
-      rt.mixGain = g;
+      rt.mixGain = g < 1e-4 && want === 0 ? 0 : g;
       for (let i = 0; i < n; i++) {
-        workL[i] = tmpL[i];
-        workR[i] = tmpR[i];
+        workL[i] = Number.isFinite(tmpL[i]) ? tmpL[i] : 0;
+        workR[i] = Number.isFinite(tmpR[i]) ? tmpR[i] : 0;
       }
     }
 
@@ -845,26 +859,35 @@ class GridFxGraph {
   }
 
   _processInsertWet(rt, n) {
-    const p = rt.params;
-    if (rt.type === "delay") {
-      // Engine applies its own mix — we set mix=1 so out is wet only
-      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
-    } else if (rt.type === "reverb") {
-      const mono = new Float32Array(n);
-      for (let i = 0; i < n; i++) mono[i] = (rt.inL[i] + rt.inR[i]) * 0.5;
-      const wetL = new Float32Array(n);
-      const wetR = new Float32Array(n);
-      rt.engine.process(mono, wetL, wetR, n, this.sampleRate, p.size ?? 0.5, p.damp ?? 0.4, 1);
-      for (let i = 0; i < n; i++) {
-        rt.outL[i] = wetL[i];
-        rt.outR[i] = wetR[i];
+    const p = rt.params || {};
+    try {
+      if (rt.type === "delay") {
+        rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
+      } else if (rt.type === "reverb") {
+        const mono = new Float32Array(n);
+        for (let i = 0; i < n; i++) mono[i] = (rt.inL[i] + rt.inR[i]) * 0.5;
+        const wetL = new Float32Array(n);
+        const wetR = new Float32Array(n);
+        rt.engine.process(
+          mono, wetL, wetR, n, this.sampleRate,
+          p.size ?? 0.5, p.damp ?? 0.4, 1,
+        );
+        for (let i = 0; i < n; i++) {
+          rt.outL[i] = wetL[i];
+          rt.outR[i] = wetR[i];
+        }
+      } else if (rt.type === "distort" || rt.type === "filter") {
+        // Full wet path (mix=1)
+        rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, { ...p, mix: 1 });
+      } else if (rt.type === "pan") {
+        rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p);
+      } else if (rt.engine?.process) {
+        rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
       }
-    } else if (rt.type === "distort" || rt.type === "filter") {
-      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, { ...p, mix: 1 });
-    } else if (rt.type === "pan") {
-      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p);
-    } else if (rt.engine) {
-      rt.engine.process(rt.inL, rt.inR, rt.outL, rt.outR, n, p, this.sampleRate);
+    } catch (_) {
+      // Leave outs at 0 on DSP failure — dry chain still passes via blend.
+      rt.outL.fill(0, 0, n);
+      rt.outR.fill(0, 0, n);
     }
   }
 }
