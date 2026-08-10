@@ -5,6 +5,7 @@ import { FACTORY_SKETCHES, buildFactorySketch } from "./examples.js";
 import { FX_FACTORY_SKETCHES } from "./examples-fx.js";
 import { AIR_DAGGER_SKETCHES, buildAirDaggerPattern } from "./examples-airdagger.js";
 import { LAB_FACTORY_SKETCHES } from "./examples-lab.js";
+import { TR_FACTORY_SKETCHES, buildTrSketch } from "./examples-tr.js";
 
 const PREFIX = "jacquardesque:v4:score:";
 const INDEX_KEY = "jacquardesque:v4:index";
@@ -12,13 +13,14 @@ const CURRENT_KEY = "jacquardesque:v4:current";
 const SEEDED_KEY = "jacquardesque:v4:seeded";
 /** Bump to rewrite factory sketch bodies (user-named sketches stay). */
 const FACTORY_REV_KEY = "jacquardesque:v4:factoryRev";
-const FACTORY_REV = "inst-lab-master-1";
+const FACTORY_REV = "tr-factory-1";
 
 const ALL_FACTORY = [
   ...FACTORY_SKETCHES,
   ...FX_FACTORY_SKETCHES,
   ...AIR_DAGGER_SKETCHES,
   ...LAB_FACTORY_SKETCHES,
+  ...TR_FACTORY_SKETCHES,
 ];
 
 export class ProjectStore {
@@ -224,5 +226,6 @@ function buildAnyFactory(id) {
     FX_FACTORY_SKETCHES.find((s) => s.id === id)?.build() ||
     buildAirDaggerPattern(id) ||
     LAB_FACTORY_SKETCHES.find((s) => s.id === id)?.build() ||
+    buildTrSketch(id) ||
     null;
 }
