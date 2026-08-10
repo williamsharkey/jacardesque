@@ -2850,15 +2850,110 @@ export class ScoreView {
     ctx.restore();
   }
 
+  /**
+   * Playhead: full-cell highlight (works for any path direction).
+   * Plus a bright leading-edge bar along the travel direction (DAW-style "now").
+   */
   _drawPlayheads(ctx) {
-    ctx.fillStyle = Style.Playhead;
     for (const { lane, step } of this._playheads) {
       if (step < 0 || step >= lane.steps.length) continue;
-      const origin = Style.cellOrigin(lane.cellPoint(step, 0));
+      lane.ensurePath?.();
       const depth = Math.max(1, lane.steps[step].depth);
-      const height = depth * Style.StrideY - Style.Gap;
-      ctx.fillRect(origin.x - Style.Gap + 1, origin.y, 3, height);
+
+      // Highlight every stacked tile in this step
+      for (let d = 0; d < depth; d++) {
+        const pt = lane.cellPoint(step, d);
+        const r = Style.cellRect(pt);
+        ctx.fillStyle = withAlpha(Style.Playhead, d === 0 ? 0.2 : 0.12);
+        roundRect(ctx, r.x, r.y, r.w, r.h, Style.Radius);
+        ctx.fill();
+        ctx.strokeStyle = withAlpha(Style.Playhead, d === 0 ? 0.95 : 0.55);
+        ctx.lineWidth = d === 0 ? 2 : 1.25;
+        roundRect(ctx, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Style.Radius);
+        ctx.stroke();
+      }
+
+      // Direction-aware leading edge on the path cell (where time advances)
+      const edge = this._playheadLeadingEdge(lane, step);
+      if (edge) {
+        ctx.fillStyle = withAlpha(Style.Playhead, 0.95);
+        ctx.fillRect(edge.x, edge.y, edge.w, edge.h);
+      }
     }
+  }
+
+  /**
+   * Thin bar on the outgoing edge of the current step cell, based on path
+   * direction (E/W/N/S). Falls back to east if direction is unknown.
+   */
+  _playheadLeadingEdge(lane, step) {
+    const path = lane.path;
+    if (!path?.length || step < 0 || step >= path.length) return null;
+    const cur = path[step];
+    let next = path[step + 1];
+    if (!next && lane.circular && path.length > 1) next = path[0];
+    let prev = path[step - 1];
+    if (!prev && lane.circular && path.length > 1) prev = path[path.length - 1];
+
+    let dx = 0;
+    let dy = 0;
+    if (next) {
+      // Prefer shortest toroidal step toward next
+      const gw = this.score.gridW || 32;
+      const gh = this.score.gridH || 16;
+      let rawDx = next.x - cur.x;
+      let rawDy = next.y - cur.y;
+      if (rawDx > gw / 2) rawDx -= gw;
+      if (rawDx < -gw / 2) rawDx += gw;
+      if (rawDy > gh / 2) rawDy -= gh;
+      if (rawDy < -gh / 2) rawDy += gh;
+      if (Math.abs(rawDx) >= Math.abs(rawDy) && rawDx !== 0) {
+        dx = Math.sign(rawDx);
+        dy = 0;
+      } else if (rawDy !== 0) {
+        dx = 0;
+        dy = Math.sign(rawDy);
+      }
+    } else if (prev) {
+      // At last step: use incoming direction as "forward"
+      let rawDx = cur.x - prev.x;
+      let rawDy = cur.y - prev.y;
+      const gw = this.score.gridW || 32;
+      const gh = this.score.gridH || 16;
+      if (rawDx > gw / 2) rawDx -= gw;
+      if (rawDx < -gw / 2) rawDx += gw;
+      if (rawDy > gh / 2) rawDy -= gh;
+      if (rawDy < -gh / 2) rawDy += gh;
+      if (Math.abs(rawDx) >= Math.abs(rawDy) && rawDx !== 0) {
+        dx = Math.sign(rawDx);
+        dy = 0;
+      } else if (rawDy !== 0) {
+        dx = 0;
+        dy = Math.sign(rawDy);
+      }
+    }
+    if (dx === 0 && dy === 0) {
+      dx = 1;
+      dy = 0;
+    }
+
+    const r = Style.cellRect(cur);
+    const t = 3; // thickness
+    const inset = 2;
+    if (dx > 0) {
+      // East edge
+      return { x: r.x + r.w - t - inset, y: r.y + inset, w: t, h: r.h - inset * 2 };
+    }
+    if (dx < 0) {
+      // West edge
+      return { x: r.x + inset, y: r.y + inset, w: t, h: r.h - inset * 2 };
+    }
+    if (dy > 0) {
+      // South edge
+      return { x: r.x + inset, y: r.y + r.h - t - inset, w: r.w - inset * 2, h: t };
+    }
+    // North edge
+    return { x: r.x + inset, y: r.y + inset, w: r.w - inset * 2, h: t };
   }
 
   _drawCursor(ctx) {
