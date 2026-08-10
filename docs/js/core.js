@@ -334,12 +334,13 @@ const FmCurve = {
   },
 };
 
-export function noteEventFromPatch(patch, midiNote, gateSeconds, startSample) {
+export function noteEventFromPatch(patch, midiNote, gateSeconds, startSample, channel = 1) {
   const level = Math.min(1, Math.max(0, patch.level));
   const pan = Math.min(1, Math.max(-1, patch.pan));
   return {
     startSample: startSample | 0,
     midi: midiNote | 0,
+    channel: channel | 0,
     frequency: Pitch.toFrequency(midiNote),
     level,
     pan,
@@ -699,6 +700,11 @@ export function emptyCell() {
 export class Score {
   constructor() {
     this.lanes = [];
+    // Grid-native FX world (pedals, path sends, chains, automation).
+    this.fxModules = [];
+    this.pathRoutes = [];
+    this.fxRoutes = [];
+    this.autoNodes = [];
   }
 
   at(point) {
@@ -1032,8 +1038,8 @@ function n(name) {
 // ---------------------------------------------------------------------------
 
 export const ProjectFormat = {
-  // v9: instrument= on patches, meta title/haiku for sticky notes.
-  Version: 9,
+  // v10: grid FX modules, path routes, fx chains, automation nodes.
+  Version: 10,
   Extension: ".jacquard",
 
   write(project) {
@@ -1054,6 +1060,7 @@ export const ProjectFormat = {
     for (const lane of project.score.lanes) {
       writeLane(lines, project.score, lane);
     }
+    writeFxWorld(lines, project.score);
     return lines.join("\n") + "\n";
   },
 
@@ -1100,6 +1107,18 @@ export const ProjectFormat = {
         case "step":
           if (!lane) throw fail(number, "step outside a lane");
           readStep(lane.addStep(), tokens, number);
+          break;
+        case "fxmod":
+          readFxMod(score, tokens, number);
+          break;
+        case "pathroute":
+          readPathRoute(score, tokens, number);
+          break;
+        case "fxroute":
+          readFxRoute(score, tokens, number);
+          break;
+        case "auto":
+          readAutoNode(score, tokens, number);
           break;
         default:
           throw fail(number, "unknown keyword " + tokens[0]);
@@ -1183,6 +1202,119 @@ function writeFx(fx) {
     " dfb=" + F(fx.delayFeedback) +
     " dtone=" + F(fx.delayTone) +
     " dspread=" + F(fx.delaySpread);
+}
+
+function writeFxWorld(lines, score) {
+  for (const m of score.fxModules || []) {
+    let s = "fxmod " + m.type + " " + m.x + " " + m.y + " id=" + m.id;
+    for (const [k, v] of Object.entries(m.params || {})) s += " " + k + "=" + F(v);
+    lines.push(s);
+  }
+  for (const r of score.pathRoutes || []) {
+    lines.push(
+      "pathroute lane=" + r.laneIndex +
+      " from=" + r.fromStep +
+      " to=" + r.toStep +
+      " target=" + r.targetFxId +
+      " amount=" + F(r.amount) +
+      " id=" + r.id,
+    );
+  }
+  for (const r of score.fxRoutes || []) {
+    lines.push(
+      "fxroute from=" + r.fromFxId +
+      " to=" + r.toFxId +
+      " amount=" + F(r.amount) +
+      " id=" + r.id,
+    );
+  }
+  for (const a of score.autoNodes || []) {
+    lines.push(
+      "auto " + a.x + " " + a.y +
+      " target=" + a.targetFxId +
+      " param=" + a.paramKey +
+      " value=" + F(a.value) +
+      " id=" + a.id,
+    );
+  }
+}
+
+function readFxMod(score, tokens, number) {
+  const type = arg(tokens, 1, number);
+  const x = readInt(arg(tokens, 2, number));
+  const y = readInt(arg(tokens, 3, number));
+  let id = null;
+  const params = {};
+  for (let i = 4; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "id") id = v;
+    else params[k] = readFloat(v);
+  }
+  if (!score.fxModules) score.fxModules = [];
+  score.fxModules.push({
+    id: id || ("fx-" + score.fxModules.length),
+    type,
+    x,
+    y,
+    w: type === "pan" ? 2 : 3,
+    h: (type === "delay" || type === "reverb") ? 3 : 2,
+    params: Object.keys(params).length ? params : { mix: 0.35 },
+  });
+}
+
+function readPathRoute(score, tokens) {
+  const r = {
+    id: "pr",
+    laneIndex: 0,
+    fromStep: 0,
+    toStep: 4,
+    targetFxId: "",
+    amount: 0.5,
+  };
+  for (let i = 1; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "lane") r.laneIndex = readInt(v);
+    else if (k === "from") r.fromStep = readInt(v);
+    else if (k === "to") r.toStep = readInt(v);
+    else if (k === "target") r.targetFxId = v;
+    else if (k === "amount") r.amount = readFloat(v);
+    else if (k === "id") r.id = v;
+  }
+  if (!score.pathRoutes) score.pathRoutes = [];
+  score.pathRoutes.push(r);
+}
+
+function readFxRoute(score, tokens) {
+  const r = { id: "fr", fromFxId: "", toFxId: "", amount: 1 };
+  for (let i = 1; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "from") r.fromFxId = v;
+    else if (k === "to") r.toFxId = v;
+    else if (k === "amount") r.amount = readFloat(v);
+    else if (k === "id") r.id = v;
+  }
+  if (!score.fxRoutes) score.fxRoutes = [];
+  score.fxRoutes.push(r);
+}
+
+function readAutoNode(score, tokens, number) {
+  const a = {
+    id: "au",
+    x: readInt(arg(tokens, 1, number)),
+    y: readInt(arg(tokens, 2, number)),
+    targetFxId: "",
+    paramKey: "mix",
+    value: 0,
+  };
+  for (let i = 3; i < tokens.length; i++) {
+    const [k, v] = split(tokens[i]);
+    if (k === "target") a.targetFxId = v;
+    else if (k === "param") a.paramKey = v;
+    else if (k === "value") a.value = readFloat(v);
+    else if (k === "id") a.id = v;
+  }
+  if (!score.autoNodes) score.autoNodes = [];
+  score.autoNodes.push(a);
 }
 
 function readLane(score, tokens, number, links) {
@@ -1521,6 +1653,7 @@ export class Sequencer {
           tile.note,
           tile.length * stepSeconds,
           startSample,
+          channel,
         ));
       } else if (tile instanceof JumpTile) {
         const branch = this.project.score.destinationOf(tile);

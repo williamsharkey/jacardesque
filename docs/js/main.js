@@ -5,6 +5,7 @@ import { AudioEngine } from "./audio.js";
 import { ScoreEditor } from "./editor.js";
 import { ProjectStore } from "./store.js";
 import { JacquardUI } from "./ui.js";
+import { buildFxGraphMessage, ensureFxLists } from "./fx-model.js";
 
 const LOOKAHEAD = 0.12;
 const MAX_VOICES = 32;
@@ -146,6 +147,12 @@ class App {
     );
     if (this._pending.length) this.audio.scheduleMany(this._pending);
     this.audio.setFx(this.project.fx, this.project.tempo);
+    ensureFxLists(this.project.score);
+    this.audio.setFxGraph(buildFxGraphMessage(
+      this.project,
+      this.sequencer.runners,
+      this.sequencer.isPlaying,
+    ));
     this.ui.update();
   }
 }

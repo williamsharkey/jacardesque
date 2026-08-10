@@ -13,6 +13,16 @@ import {
   Pitch,
   PatchBank,
 } from "./core.js";
+import {
+  createFxModule,
+  createPathRoute,
+  createFxRoute,
+  createAutoNode,
+  ensureFxLists,
+  findFxAt,
+  removeFxModule,
+  FxTypes,
+} from "./fx-model.js";
 
 export class ScoreEditor {
   constructor({ project, sequencer, audio, getCursor, setCursor }) {
@@ -25,6 +35,7 @@ export class ScoreEditor {
     this.onTouched = null; // lightweight: score mutated, no structural rebuild
     this._notePitch = 60;
     this._noteLength = 1;
+    this.selectedFxId = null;
   }
 
   get score() {
@@ -59,6 +70,18 @@ export class ScoreEditor {
 
   canPlaceAt(point) {
     if (!point) return false;
+    ensureFxLists(this.score);
+    if (findFxAt(this.score, point)) return false;
+    const cell = this.score.at(point);
+    if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
+    // Free ground may receive an FX pedal (not only lanes).
+    if (this.score.placementLane(point) != null) return true;
+    // Bare ground free of lanes + fx for pedal placement
+    return this.score.isFree(point);
+  }
+
+  canPlaceTileAt(point) {
+    if (!point) return false;
     const cell = this.score.at(point);
     if (cell.kind === CellKind.Tile || cell.kind === CellKind.Head) return false;
     return this.score.placementLane(point) != null;
@@ -75,7 +98,28 @@ export class ScoreEditor {
 
     if (atPoint) this.setCursor(atPoint);
     const point = this.getCursor();
-    if (!this.canPlaceAt(point)) return false;
+
+    // FX pedals land on free ground (not on lane cells).
+    if (spec.kind === "FX") {
+      ensureFxLists(this.score);
+      if (findFxAt(this.score, point)) return false;
+      // Claim a small rect free of lanes
+      const type = spec.fxType || "delay";
+      const def = FxTypes[type] || FxTypes.delay;
+      for (let dy = 0; dy < def.h; dy++) {
+        for (let dx = 0; dx < def.w; dx++) {
+          const p = gp(point.x + dx, point.y + dy);
+          if (!this.score.isFree(p) || findFxAt(this.score, p)) return false;
+        }
+      }
+      const mod = createFxModule(type, point.x, point.y);
+      this.score.fxModules.push(mod);
+      this.selectedFxId = mod.id;
+      this.commit();
+      return true;
+    }
+
+    if (!this.canPlaceTileAt(point)) return false;
 
     let tile;
     switch (spec.kind) {
@@ -117,6 +161,59 @@ export class ScoreEditor {
     return true;
   }
 
+  placeAutoNode(targetFxId, paramKey, value, point) {
+    ensureFxLists(this.score);
+    // Replace existing auto at same cell
+    this.score.autoNodes = this.score.autoNodes.filter(
+      (a) => !(a.x === point.x && a.y === point.y),
+    );
+    this.score.autoNodes.push(createAutoNode({
+      x: point.x,
+      y: point.y,
+      targetFxId,
+      paramKey,
+      value,
+    }));
+    this.commit();
+  }
+
+  placePathRoute(laneIndex, fromStep, toStep, targetFxId, amount = 0.55) {
+    ensureFxLists(this.score);
+    this.score.pathRoutes.push(createPathRoute({
+      laneIndex,
+      fromStep,
+      toStep,
+      targetFxId,
+      amount,
+    }));
+    this.commit();
+  }
+
+  placeFxRoute(fromFxId, toFxId, amount = 1) {
+    ensureFxLists(this.score);
+    this.score.fxRoutes.push(createFxRoute({ fromFxId, toFxId, amount }));
+    this.commit();
+  }
+
+  deleteAtCursor() {
+    ensureFxLists(this.score);
+    const point = this.getCursor();
+    const fx = findFxAt(this.score, point);
+    if (fx) {
+      removeFxModule(this.score, fx.id);
+      if (this.selectedFxId === fx.id) this.selectedFxId = null;
+      this.commit();
+      return;
+    }
+    const auto = this.score.autoNodes.find((a) => a.x === point.x && a.y === point.y);
+    if (auto) {
+      this.score.autoNodes = this.score.autoNodes.filter((a) => a.id !== auto.id);
+      this.commit();
+      return;
+    }
+    this.delete();
+  }
+
   placeNote() {
     this.put("NOTE");
   }
@@ -134,6 +231,11 @@ export class ScoreEditor {
       return;
     }
     if (this.score.remove(this.getCursor())) this.commit();
+  }
+
+  // Keyboard Delete prefers FX/auto when under cursor.
+  deleteSmart() {
+    this.deleteAtCursor();
   }
 
   rememberNote(note) {
@@ -223,7 +325,7 @@ export class ScoreEditor {
         return true;
       case "Delete":
       case "Backspace":
-        this.delete();
+        this.deleteSmart();
         return true;
       case "Enter":
         if (this.selected instanceof NoteTile) this.preview(this.selected.note);

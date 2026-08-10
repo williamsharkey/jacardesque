@@ -2,11 +2,14 @@
 
 import { Project, ProjectFormat } from "./core.js";
 import { FACTORY_SKETCHES, buildFactorySketch } from "./examples.js";
+import { FX_FACTORY_SKETCHES } from "./examples-fx.js";
 
-const PREFIX = "jacquardesque:v2:score:";
-const INDEX_KEY = "jacquardesque:v2:index";
-const CURRENT_KEY = "jacquardesque:v2:current";
-const SEEDED_KEY = "jacquardesque:v2:seeded";
+const PREFIX = "jacquardesque:v3:score:";
+const INDEX_KEY = "jacquardesque:v3:index";
+const CURRENT_KEY = "jacquardesque:v3:current";
+const SEEDED_KEY = "jacquardesque:v3:seeded";
+
+const ALL_FACTORY = [...FACTORY_SKETCHES, ...FX_FACTORY_SKETCHES];
 
 export class ProjectStore {
   constructor() {
@@ -28,7 +31,7 @@ export class ProjectStore {
         return this._index.slice();
       }
     } catch (_) { /* fall through */ }
-    this._index = FACTORY_SKETCHES.map((s) => s.id);
+    this._index = ALL_FACTORY.map((s) => s.id);
     return this._index.slice();
   }
 
@@ -48,7 +51,7 @@ export class ProjectStore {
     const seeded = localStorage.getItem(SEEDED_KEY);
     if (!seeded) {
       const ids = [];
-      for (const entry of FACTORY_SKETCHES) {
+      for (const entry of ALL_FACTORY) {
         const project = entry.build();
         localStorage.setItem(this.key(entry.id), ProjectFormat.write(project));
         ids.push(entry.id);
@@ -65,9 +68,9 @@ export class ProjectStore {
     const result = this.load();
     if (result.project) return result;
 
-    const first = this._index[0] || FACTORY_SKETCHES[0].id;
+    const first = this._index[0] || ALL_FACTORY[0].id;
     this.name = first;
-    const rebuilt = buildFactorySketch(first) || Project.createEmpty();
+    const rebuilt = buildAnyFactory(first) || Project.createEmpty();
     this.save(rebuilt);
     return { project: rebuilt, message: "restored " + first };
   }
@@ -94,7 +97,7 @@ export class ProjectStore {
     const raw = localStorage.getItem(this.key());
     if (raw == null) {
       // Try factory rebuild
-      const factory = buildFactorySketch(name);
+      const factory = buildAnyFactory(name);
       if (factory) {
         this.save(factory);
         return { project: factory, message: name };
@@ -167,4 +170,10 @@ export class ProjectStore {
     if (project?.title) return project.title;
     return this.name;
   }
+}
+
+function buildAnyFactory(id) {
+  return buildFactorySketch(id) ||
+    FX_FACTORY_SKETCHES.find((s) => s.id === id)?.build() ||
+    null;
 }

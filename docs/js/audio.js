@@ -19,6 +19,7 @@ export class AudioEngine {
       cancelledNotes: 0,
     };
     this._lastFx = null;
+    this._lastGraphKey = null;
     this._lastDspSample = 0;
     this._lastReportTime = null;
     this._contextAnchorTime = null;
@@ -120,6 +121,15 @@ export class AudioEngine {
     if (this._lastFx && fxEqual(this._lastFx, runtime)) return;
     this._lastFx = runtime;
     this.node.port.postMessage({ type: "fx", fx: runtime });
+  }
+
+  /** Push modular grid FX graph (modules, path opens, chains). */
+  setFxGraph(graph) {
+    if (!this.node) return;
+    const key = JSON.stringify(graph);
+    if (key === this._lastGraphKey) return;
+    this._lastGraphKey = key;
+    this.node.port.postMessage({ type: "fxgraph", graph });
   }
 }
 

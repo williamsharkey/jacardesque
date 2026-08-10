@@ -302,7 +302,8 @@ class VoicePool {
     this.queue.push(note);
   }
 
-  render(dryL, dryR, reverbIn, delayIn, frameCount, bufferStart, sampleRate) {
+  // channelMono: optional array of 8 mono bus Float32Arrays for path-sends.
+  render(dryL, dryR, reverbIn, delayIn, frameCount, bufferStart, sampleRate, channelMono) {
     const bufferEnd = bufferStart + frameCount;
     while (true) {
       let next = -1;
@@ -322,6 +323,7 @@ class VoicePool {
       const note = voice.note;
       const total = totalDuration(note);
       const gains = panGains(note);
+      const ch = Math.min(8, Math.max(1, note.channel | 1)) - 1;
       for (let frame = 0; frame < frameCount; frame++) {
         const time = (bufferStart + frame - note.startSample) * dt;
         if (time < 0) continue;
@@ -334,6 +336,7 @@ class VoicePool {
         dryR[frame] += sample * gains.right;
         reverbIn[frame] += sample * note.reverbSend;
         delayIn[frame] += sample * note.delaySend;
+        if (channelMono && channelMono[ch]) channelMono[ch][frame] += sample;
       }
     }
   }
@@ -549,6 +552,245 @@ function clamp01(x) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
+// ---------------------------------------------------------------------------
+// Grid FX modules — each pedal is a lightweight stereo processor
+// ---------------------------------------------------------------------------
+
+class ModDelay {
+  constructor(sampleRate) {
+    this.cap = Math.floor(sampleRate * 2) + 4;
+    this.bufL = new Float32Array(this.cap);
+    this.bufR = new Float32Array(this.cap);
+    this.w = 0;
+    this.lpL = 0;
+    this.lpR = 0;
+  }
+
+  process(inL, inR, outL, outR, n, params, sampleRate) {
+    const mix = clamp01(params.mix ?? 0.35);
+    const time = Math.min(1.8, Math.max(0.02, params.time ?? 0.35));
+    const fb = Math.min(0.92, Math.max(0, params.feedback ?? 0.35));
+    const tone = clamp01(params.tone ?? 0.4);
+    const tap = Math.min(this.cap - 2, Math.max(2, time * sampleRate));
+    const cut = (1 - tone) * (1 - tone) * 0.95 + 0.05;
+    let w = this.w;
+    for (let i = 0; i < n; i++) {
+      let r = w - tap;
+      if (r < 0) r += this.cap;
+      const ri = r | 0;
+      const f = r - ri;
+      const n1 = ri + 1 >= this.cap ? 0 : ri + 1;
+      const dl = this.bufL[ri] * (1 - f) + this.bufL[n1] * f;
+      const dr = this.bufR[ri] * (1 - f) + this.bufR[n1] * f;
+      this.lpL += (dl - this.lpL) * cut;
+      this.lpR += (dr - this.lpR) * cut;
+      outL[i] += this.lpL * mix;
+      outR[i] += this.lpR * mix;
+      this.bufL[w] = inL[i] + this.lpL * fb;
+      this.bufR[w] = inR[i] + this.lpR * fb;
+      w++;
+      if (w >= this.cap) w = 0;
+    }
+    this.w = w;
+  }
+}
+
+class ModDistort {
+  process(inL, inR, outL, outR, n, params) {
+    const mix = clamp01(params.mix ?? 0.4);
+    const drive = 1 + clamp01(params.drive ?? 0.45) * 8;
+    for (let i = 0; i < n; i++) {
+      const wl = Math.tanh(inL[i] * drive);
+      const wr = Math.tanh(inR[i] * drive);
+      outL[i] += (inL[i] * (1 - mix) + wl * mix);
+      outR[i] += (inR[i] * (1 - mix) + wr * mix);
+    }
+  }
+}
+
+class ModFilter {
+  constructor() {
+    this.zL = 0;
+    this.zR = 0;
+  }
+
+  process(inL, inR, outL, outR, n, params) {
+    const mix = clamp01(params.mix ?? 1);
+    const cut = 0.02 + clamp01(params.cutoff ?? 0.55) * 0.7;
+    const res = clamp01(params.reso ?? 0.2) * 0.9;
+    for (let i = 0; i < n; i++) {
+      this.zL += (inL[i] - this.zL - this.zL * res * 0.3) * cut;
+      this.zR += (inR[i] - this.zR - this.zR * res * 0.3) * cut;
+      outL[i] += inL[i] * (1 - mix) + this.zL * mix;
+      outR[i] += inR[i] * (1 - mix) + this.zR * mix;
+    }
+  }
+}
+
+class ModPan {
+  process(inL, inR, outL, outR, n, params) {
+    const pan = Math.min(1, Math.max(-1, params.pan ?? 0));
+    const width = clamp01(params.width ?? 0.5);
+    const angle = (pan + 1) * (FastMath.HalfPi * 0.5);
+    const gl = FastMath.cos(angle) * 1.414;
+    const gr = FastMath.sin(angle) * 1.414;
+    for (let i = 0; i < n; i++) {
+      const mid = (inL[i] + inR[i]) * 0.5;
+      const side = (inL[i] - inR[i]) * 0.5 * width;
+      const l = mid + side;
+      const r = mid - side;
+      outL[i] += l * gl;
+      outR[i] += r * gr;
+    }
+  }
+}
+
+class FxModuleRuntime {
+  constructor(id, type, sampleRate) {
+    this.id = id;
+    this.type = type;
+    this.params = {};
+    this.inL = null;
+    this.inR = null;
+    this.outL = null;
+    this.outR = null;
+    if (type === "delay") this.engine = new ModDelay(sampleRate);
+    else if (type === "reverb") this.engine = new ReverbBus(sampleRate);
+    else if (type === "distort") this.engine = new ModDistort();
+    else if (type === "filter") this.engine = new ModFilter();
+    else if (type === "pan") this.engine = new ModPan();
+    else this.engine = new ModDelay(sampleRate);
+  }
+
+  ensure(n) {
+    if (!this.inL || this.inL.length < n) {
+      this.inL = new Float32Array(n);
+      this.inR = new Float32Array(n);
+      this.outL = new Float32Array(n);
+      this.outR = new Float32Array(n);
+    } else {
+      this.inL.fill(0, 0, n);
+      this.inR.fill(0, 0, n);
+      this.outL.fill(0, 0, n);
+      this.outR.fill(0, 0, n);
+    }
+  }
+
+  process(n, sampleRate) {
+    const p = this.params;
+    if (this.type === "delay") {
+      this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p, sampleRate);
+      // dry mix through
+      const mix = clamp01(p.mix ?? 0.35);
+      for (let i = 0; i < n; i++) {
+        this.outL[i] += this.inL[i] * (1 - mix);
+        this.outR[i] += this.inR[i] * (1 - mix);
+      }
+    } else if (this.type === "reverb") {
+      const mono = new Float32Array(n);
+      for (let i = 0; i < n; i++) mono[i] = (this.inL[i] + this.inR[i]) * 0.5;
+      const wetL = new Float32Array(n);
+      const wetR = new Float32Array(n);
+      this.engine.process(mono, wetL, wetR, n, sampleRate, p.size ?? 0.5, p.damp ?? 0.4, 1);
+      const mix = clamp01(p.mix ?? 0.3);
+      for (let i = 0; i < n; i++) {
+        this.outL[i] = this.inL[i] * (1 - mix) + wetL[i] * mix;
+        this.outR[i] = this.inR[i] * (1 - mix) + wetR[i] * mix;
+      }
+    } else {
+      this.engine.process(this.inL, this.inR, this.outL, this.outR, n, p);
+    }
+  }
+}
+
+class GridFxGraph {
+  constructor(sampleRate) {
+    this.sampleRate = sampleRate;
+    this.modules = new Map(); // id -> FxModuleRuntime
+    this.pathOpens = [];
+    this.chains = [];
+    this.enabled = false;
+  }
+
+  setGraph(msg) {
+    if (!msg || !msg.modules) {
+      this.enabled = false;
+      return;
+    }
+    this.enabled = msg.modules.length > 0;
+    const seen = new Set();
+    for (const m of msg.modules) {
+      seen.add(m.id);
+      let rt = this.modules.get(m.id);
+      if (!rt || rt.type !== m.type) {
+        rt = new FxModuleRuntime(m.id, m.type, this.sampleRate);
+        this.modules.set(m.id, rt);
+      }
+      rt.params = m.params || {};
+    }
+    for (const id of [...this.modules.keys()]) {
+      if (!seen.has(id)) this.modules.delete(id);
+    }
+    this.pathOpens = msg.pathOpens || [];
+    this.chains = msg.chains || [];
+  }
+
+  /**
+   * channelMono[0..7], dryL/R already filled.
+   * Adds wet output into wetL/wetR.
+   */
+  process(channelMono, dryL, dryR, wetL, wetR, n) {
+    if (!this.enabled) return;
+    for (const rt of this.modules.values()) rt.ensure(n);
+
+    // Path opens: feed channel bus into module inputs when window is live.
+    for (const open of this.pathOpens) {
+      const ch = Math.min(8, Math.max(1, open.channel | 1)) - 1;
+      const bus = channelMono[ch];
+      const rt = this.modules.get(open.targetFxId);
+      if (!bus || !rt) continue;
+      const amt = open.amount ?? 0.5;
+      for (let i = 0; i < n; i++) {
+        const s = bus[i] * amt;
+        rt.inL[i] += s;
+        rt.inR[i] += s;
+      }
+    }
+
+    // Process modules; apply fx→fx chains as extra inputs before process.
+    // One pass topo: process in map order then chain outputs into targets.
+    // Two-pass: process all, then mix chain into wet (simple series via second buffer).
+    // Better: process in order, chains feed input of next before its process.
+    const order = [...this.modules.values()];
+    // First process all from path inputs only
+    for (const rt of order) rt.process(n, this.sampleRate);
+
+    // Chains: take output of from, feed to to input, re-process to (lightweight series)
+    for (const c of this.chains) {
+      const from = this.modules.get(c.from);
+      const to = this.modules.get(c.to);
+      if (!from || !to) continue;
+      const amt = c.amount ?? 1;
+      for (let i = 0; i < n; i++) {
+        to.inL[i] += from.outL[i] * amt;
+        to.inR[i] += from.outR[i] * amt;
+      }
+      // Clear out and re-process with chained input
+      to.outL.fill(0, 0, n);
+      to.outR.fill(0, 0, n);
+      to.process(n, this.sampleRate);
+    }
+
+    // Sum all module outputs to wet
+    for (const rt of order) {
+      for (let i = 0; i < n; i++) {
+        wetL[i] += rt.outL[i];
+        wetR[i] += rt.outR[i];
+      }
+    }
+  }
+}
+
 class JacquardProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -557,6 +799,7 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this.pool = new VoicePool(maxVoices);
     this.reverb = new ReverbBus(sampleRate);
     this.delay = new DelayBus(sampleRate);
+    this.gridFx = new GridFxGraph(sampleRate);
     this.dspSample = 0;
     // Headroom: dense chords + sends used to slam the soft clip ("rinky dink").
     this.masterGain = 0.42;
@@ -577,6 +820,7 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this._delayIn = null;
     this._wetL = null;
     this._wetR = null;
+    this._chMono = null;
     this.port.onmessage = (e) => this.onMessage(e.data);
     // First status immediately so the main thread can anchor its clock.
     this.port.postMessage({
@@ -599,6 +843,7 @@ class JacquardProcessor extends AudioWorkletProcessor {
     this._delayIn = new Float32Array(frameCount);
     this._wetL = new Float32Array(frameCount);
     this._wetR = new Float32Array(frameCount);
+    this._chMono = Array.from({ length: 8 }, () => new Float32Array(frameCount));
   }
 
   onMessage(msg) {
@@ -609,6 +854,8 @@ class JacquardProcessor extends AudioWorkletProcessor {
       for (const note of msg.notes) this.pool.enqueue(note);
     } else if (msg.type === "fx") {
       this.fx = msg.fx;
+    } else if (msg.type === "fxgraph") {
+      this.gridFx.setGraph(msg.graph);
     } else if (msg.type === "gain") {
       this.masterGain = msg.gain;
     }
@@ -634,17 +881,27 @@ class JacquardProcessor extends AudioWorkletProcessor {
     delayIn.fill(0, 0, frameCount);
     wetL.fill(0, 0, frameCount);
     wetR.fill(0, 0, frameCount);
+    for (const ch of this._chMono) ch.fill(0, 0, frameCount);
 
     const bufferStart = this.dspSample;
-    this.pool.render(dryL, dryR, reverbIn, delayIn, frameCount, bufferStart, this.sampleRate);
-    this.delay.process(
-      delayIn, wetL, wetR, frameCount,
-      this.fx.delaySamples, this.fx.delayFeedback, this.fx.delayTone, this.fx.delaySpread,
+    this.pool.render(
+      dryL, dryR, reverbIn, delayIn, frameCount, bufferStart, this.sampleRate, this._chMono,
     );
-    this.reverb.process(
-      reverbIn, wetL, wetR, frameCount, this.sampleRate,
-      this.fx.reverbSize, this.fx.reverbDamp, this.fx.reverbWidth,
-    );
+
+    // Grid FX pedals (path-windowed) take priority when present.
+    if (this.gridFx.enabled) {
+      this.gridFx.process(this._chMono, dryL, dryR, wetL, wetR, frameCount);
+    } else {
+      // Legacy global send buses (scores with no grid pedals).
+      this.delay.process(
+        delayIn, wetL, wetR, frameCount,
+        this.fx.delaySamples, this.fx.delayFeedback, this.fx.delayTone, this.fx.delaySpread,
+      );
+      this.reverb.process(
+        reverbIn, wetL, wetR, frameCount, this.sampleRate,
+        this.fx.reverbSize, this.fx.reverbDamp, this.fx.reverbWidth,
+      );
+    }
 
     for (let i = 0; i < frameCount; i++) {
       outL[i] = softClip((dryL[i] + wetL[i]) * this.masterGain);

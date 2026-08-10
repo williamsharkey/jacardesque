@@ -30,8 +30,9 @@ The web app ports the sequencer fully, then extends the sound engine for the bro
 - Full plane editor: lanes anywhere, stacks, gates, locks, jumps / JDST
 - Parameter locks on every patch field including pan & sends
 - **Auto-save sketches** — `‹ ›` switches instantly, `+` duplicates, **New** blanks; no Load/Save
-- **Ten factory haiku sketches** with sticky notes on the plane
-- Score format `.jacquard` v9 (`instrument=`, `meta title` / `meta haiku`)
+- **Twenty factory haiku sketches** (10 musical, 10 FX-dimension) with sticky notes
+- **Grid FX pedals** (delay/reverb/distort/filter/pan): path-windowed sends, pedal chains, automation diamonds
+- Score format `.jacquard` v10 (`fxmod`, `pathroute`, `fxroute`, `auto`)
 
 ### Sound engine choices (research)
 

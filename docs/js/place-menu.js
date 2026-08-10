@@ -64,6 +64,18 @@ export function buildPlaceCategories(centreNote = 60) {
       ],
       defaultItem: 0,
     },
+    {
+      id: "fx",
+      label: "FX",
+      items: [
+        { label: "DELAY", place: { kind: "FX", fxType: "delay" } },
+        { label: "REVERB", place: { kind: "FX", fxType: "reverb" } },
+        { label: "DISTORT", place: { kind: "FX", fxType: "distort" } },
+        { label: "FILTER", place: { kind: "FX", fxType: "filter" } },
+        { label: "PAN", place: { kind: "FX", fxType: "pan" } },
+      ],
+      defaultItem: 0,
+    },
   ];
 }
 

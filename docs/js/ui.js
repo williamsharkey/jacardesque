@@ -4,7 +4,6 @@ import {
   Pitch,
   ParamTargets,
   DelayTime,
-  SendFx,
   PatchBank,
   CellKind,
   NoteTile,
@@ -23,6 +22,12 @@ import {
 import { Style } from "./style.js";
 import { InstrumentNames, InstrumentKeys } from "./instruments.js";
 import { PlaceMenu } from "./place-menu.js";
+import {
+  ensureFxLists,
+  findFxAt,
+  fxCenter,
+  FxTypes,
+} from "./fx-model.js";
 
 // ---------------------------------------------------------------------------
 // Value bar ranges
@@ -332,6 +337,16 @@ export class ScoreView {
     this.placeCentreNote = null;
     /** ({ point, place }) => void — commit from place menu */
     this.onPlaceCommit = null;
+    /** currently selected fx module id */
+    this.selectedFxId = null;
+    /** (fxId) => void */
+    this.onFxSelect = null;
+    /** ({ fxId, paramKey, value, point }) => void */
+    this.onAutoPlaced = null;
+    /** ({ laneIndex, fromStep, toStep, targetFxId }) => void */
+    this.onPathRouted = null;
+    /** ({ fromFxId, toFxId }) => void */
+    this.onFxChained = null;
 
     this._grabbed = null;
     this._grabOrigin = null;
@@ -343,6 +358,9 @@ export class ScoreView {
     this._dragCount = 1;
     this._placing = false;
     this.placeMenu = null;
+    this._autoDrag = null; // { fxId, paramKey, value, origin }
+    this._pathDrag = null; // { laneIndex, fromStep, origin }
+    this._fxChainDrag = null; // { fromFxId }
 
     this._bind();
   }
@@ -440,16 +458,58 @@ export class ScoreView {
     const pos = this.localPoint(e);
     const point = Style.cellAt(pos);
     this.setCursor(point);
+    ensureFxLists(this.score);
+
+    // Hit-test automation drag zone on selected FX
+    const autoHit = this._hitAutoZone(pos);
+    if (autoHit) {
+      e.preventDefault();
+      this._autoDrag = { ...autoHit, clientX: e.clientX, clientY: e.clientY };
+      this.canvas.setPointerCapture(e.pointerId);
+      this.paint();
+      return;
+    }
+
+    // Hit FX module
+    const fx = findFxAt(this.score, point);
+    if (fx) {
+      e.preventDefault();
+      this.selectedFxId = fx.id;
+      this.onFxSelect?.(fx.id);
+      // Start chain drag from FX body (shift or second gesture: plain drag = chain)
+      this._fxChainDrag = { fromFxId: fx.id, origin: pos, moved: false };
+      this.canvas.setPointerCapture(e.pointerId);
+      this.paint();
+      return;
+    }
+
+    // Path send nub: on rail step of a lane, start path-route drag
+    const cell = this.score.at(point);
+    if (cell.kind === CellKind.Rail || cell.kind === CellKind.Tile) {
+      const laneIndex = this.score.lanes.indexOf(cell.lane);
+      if (laneIndex >= 0 && cell.step >= 0) {
+        // Alt/option or meta: start path route from this step
+        if (e.altKey || e.metaKey) {
+          e.preventDefault();
+          this._pathDrag = {
+            laneIndex,
+            fromStep: cell.step,
+            origin: pos,
+          };
+          this.canvas.setPointerCapture(e.pointerId);
+          this.paint();
+          return;
+        }
+      }
+    }
 
     // Double-click still quick-places a note on a free cell.
-    if (e.detail >= 2 && this.canPlaceAt?.(point)) {
+    if (e.detail >= 2 && this.canPlaceAt?.(point) && this.score.placementLane(point)) {
       this.onDoubleClick?.();
       return;
     }
 
-    const cell = this.score.at(point);
-
-    // Placeable free cell (rail / empty / TERM grow): open in-place gesture menu.
+    // Placeable free cell (rail / empty / TERM grow / bare for FX): gesture menu.
     if (this.canPlaceAt?.(point)) {
       e.preventDefault();
       this._placing = true;
@@ -477,6 +537,27 @@ export class ScoreView {
   }
 
   _pointerMove(e) {
+    if (this._autoDrag) {
+      this._autoDrag.clientX = e.clientX;
+      this._autoDrag.clientY = e.clientY;
+      this._autoDrag.point = Style.cellAt(this.localPoint(e));
+      this.paint();
+      return;
+    }
+    if (this._pathDrag) {
+      this._pathDrag.point = Style.cellAt(this.localPoint(e));
+      this.paint();
+      return;
+    }
+    if (this._fxChainDrag) {
+      const pos = this.localPoint(e);
+      if (Math.hypot(pos.x - this._fxChainDrag.origin.x, pos.y - this._fxChainDrag.origin.y) > 6) {
+        this._fxChainDrag.moved = true;
+      }
+      this._fxChainDrag.point = Style.cellAt(pos);
+      this.paint();
+      return;
+    }
     if (this._placing) {
       this.placeMenu?.update(e);
       this.paint();
@@ -511,6 +592,50 @@ export class ScoreView {
   }
 
   _pointerUp(e) {
+    if (this._autoDrag) {
+      const point = Style.cellAt(this.localPoint(e));
+      const d = this._autoDrag;
+      this._autoDrag = null;
+      this.onAutoPlaced?.({
+        fxId: d.fxId,
+        paramKey: d.paramKey,
+        value: d.value,
+        point,
+      });
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+      this.paint();
+      return;
+    }
+    if (this._pathDrag) {
+      const point = Style.cellAt(this.localPoint(e));
+      const fx = findFxAt(this.score, point);
+      const d = this._pathDrag;
+      this._pathDrag = null;
+      if (fx) {
+        const toStep = Math.max(d.fromStep, d.fromStep + 3);
+        this.onPathRouted?.({
+          laneIndex: d.laneIndex,
+          fromStep: d.fromStep,
+          toStep,
+          targetFxId: fx.id,
+        });
+      }
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+      this.paint();
+      return;
+    }
+    if (this._fxChainDrag) {
+      const d = this._fxChainDrag;
+      const point = Style.cellAt(this.localPoint(e));
+      const target = findFxAt(this.score, point);
+      this._fxChainDrag = null;
+      if (d.moved && target && target.id !== d.fromFxId) {
+        this.onFxChained?.({ fromFxId: d.fromFxId, toFxId: target.id });
+      }
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+      this.paint();
+      return;
+    }
     if (this._placing) {
       this._endPlace(true);
       try {
@@ -599,10 +724,210 @@ export class ScoreView {
     this._drawLinks(ctx);
     this._drawMarkers(ctx);
     this._drawTiles(ctx);
+    this._drawFxWorld(ctx);
     this._drawPlayheads(ctx);
     this._drawCursor(ctx);
     this._drawDropCells(ctx);
     if (this._dragging && this._grabbed) this._drawGhosts(ctx);
+    this._drawGestureGhosts(ctx);
+  }
+
+  _hitAutoZone(pos) {
+    if (!this.selectedFxId || !this.score) return null;
+    ensureFxLists(this.score);
+    const mod = this.score.fxModules.find((m) => m.id === this.selectedFxId);
+    if (!mod) return null;
+    const def = FxTypes[mod.type];
+    if (!def) return null;
+    const origin = Style.cellOrigin({ x: mod.x, y: mod.y });
+    const pad = 6;
+    let y = origin.y + 22;
+    for (const p of def.params) {
+      const zone = {
+        x: origin.x + mod.w * Style.StrideX - Style.Gap - 18,
+        y,
+        w: 14,
+        h: 14,
+      };
+      if (pos.x >= zone.x && pos.x <= zone.x + zone.w &&
+          pos.y >= zone.y && pos.y <= zone.y + zone.h) {
+        return {
+          fxId: mod.id,
+          paramKey: p.key,
+          value: mod.params[p.key] ?? p.def,
+        };
+      }
+      y += 16;
+    }
+    return null;
+  }
+
+  _drawFxWorld(ctx) {
+    if (!this.score) return;
+    ensureFxLists(this.score);
+
+    // Path routes (lavender pull-off cables)
+    for (const r of this.score.pathRoutes) {
+      const lane = this.score.lanes[r.laneIndex];
+      const mod = this.score.fxModules.find((m) => m.id === r.targetFxId);
+      if (!lane || !mod) continue;
+      const a = Style.cellCenter(lane.cellPoint(r.fromStep, 0));
+      const b = Style.cellCenter(lane.cellPoint(Math.min(r.toStep, lane.steps.length - 1), 0));
+      const c = Style.cellCenter(fxCenter(mod));
+      ctx.strokeStyle = withAlpha("#a78bfa", 0.75);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y + 6);
+      ctx.quadraticCurveTo((a.x + c.x) / 2, Math.max(a.y, c.y) + 40, c.x, c.y);
+      ctx.stroke();
+      // window span on rail
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y + 10);
+      ctx.lineTo(b.x, b.y + 10);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // FX chains
+    for (const r of this.score.fxRoutes) {
+      const a = this.score.fxModules.find((m) => m.id === r.fromFxId);
+      const b = this.score.fxModules.find((m) => m.id === r.toFxId);
+      if (!a || !b) continue;
+      const pa = Style.cellCenter(fxCenter(a));
+      const pb = Style.cellCenter(fxCenter(b));
+      ctx.strokeStyle = withAlpha("#34d399", 0.8);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+
+    // Modules
+    for (const mod of this.score.fxModules) {
+      this._drawFxModule(ctx, mod, mod.id === this.selectedFxId);
+    }
+
+    // Automation nodes
+    for (const auto of this.score.autoNodes) {
+      const o = Style.cellOrigin(auto);
+      const cx = o.x + Style.CellWidth / 2;
+      const cy = o.y + Style.CellHeight / 2;
+      ctx.fillStyle = "#fbbf24";
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 8);
+      ctx.lineTo(cx + 8, cy);
+      ctx.lineTo(cx, cy + 8);
+      ctx.lineTo(cx - 8, cy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#1c1917";
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(auto.paramKey.slice(0, 3), cx, cy);
+      // cable to FX
+      const mod = this.score.fxModules.find((m) => m.id === auto.targetFxId);
+      if (mod) {
+        const t = Style.cellCenter(fxCenter(mod));
+        ctx.strokeStyle = withAlpha("#fbbf24", 0.45);
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  _drawFxModule(ctx, mod, selected) {
+    const o = Style.cellOrigin({ x: mod.x, y: mod.y });
+    const w = mod.w * Style.StrideX - Style.Gap;
+    const h = mod.h * Style.StrideY - Style.Gap;
+    ctx.fillStyle = selected ? "#2a2438" : "#1e1e28";
+    ctx.strokeStyle = selected ? "#c4b5fd" : "#6d6a7a";
+    ctx.lineWidth = selected ? 1.5 : 1;
+    roundRect(ctx, o.x, o.y, w, h, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    const def = FxTypes[mod.type] || FxTypes.delay;
+    ctx.fillStyle = "#e9e5ff";
+    ctx.font = "700 11px system-ui,sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(def.label, o.x + 6, o.y + 5);
+
+    let y = o.y + 22;
+    for (const p of def.params) {
+      const val = mod.params[p.key] ?? p.def;
+      const t = (val - p.min) / (p.max - p.min || 1);
+      // bar
+      ctx.fillStyle = "#2f2f3a";
+      ctx.fillRect(o.x + 6, y, w - 28, 10);
+      ctx.fillStyle = "#8b7cf7";
+      ctx.fillRect(o.x + 6, y, Math.max(2, (w - 28) * Math.min(1, Math.max(0, t))), 10);
+      ctx.fillStyle = "#a1a1aa";
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.fillText(p.label, o.x + 8, y);
+      // auto drag zone (diamond nub)
+      const zx = o.x + w - 16;
+      const zy = y + 5;
+      ctx.fillStyle = selected ? "#fbbf24" : "#52525b";
+      ctx.beginPath();
+      ctx.moveTo(zx, zy - 5);
+      ctx.lineTo(zx + 5, zy);
+      ctx.lineTo(zx, zy + 5);
+      ctx.lineTo(zx - 5, zy);
+      ctx.closePath();
+      ctx.fill();
+      y += 16;
+    }
+  }
+
+  _drawGestureGhosts(ctx) {
+    if (this._autoDrag?.point) {
+      const o = Style.cellCenter(this._autoDrag.point);
+      ctx.fillStyle = withAlpha("#fbbf24", 0.7);
+      ctx.beginPath();
+      ctx.moveTo(o.x, o.y - 8);
+      ctx.lineTo(o.x + 8, o.y);
+      ctx.lineTo(o.x, o.y + 8);
+      ctx.lineTo(o.x - 8, o.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (this._pathDrag?.point) {
+      const lane = this.score.lanes[this._pathDrag.laneIndex];
+      if (lane) {
+        const a = Style.cellCenter(lane.cellPoint(this._pathDrag.fromStep, 0));
+        const b = Style.cellCenter(this._pathDrag.point);
+        ctx.strokeStyle = withAlpha("#a78bfa", 0.9);
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    if (this._fxChainDrag?.moved && this._fxChainDrag.point) {
+      const from = this.score.fxModules.find((m) => m.id === this._fxChainDrag.fromFxId);
+      if (from) {
+        const a = Style.cellCenter(fxCenter(from));
+        const b = Style.cellCenter(this._fxChainDrag.point);
+        ctx.strokeStyle = withAlpha("#34d399", 0.9);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    }
   }
 
   _drawLattice(ctx) {
@@ -1156,6 +1481,20 @@ export class JacquardUI {
       this.editor.put(place, point);
       this.canvas.focus();
     };
+    this.view.onFxSelect = (id) => {
+      this.editor.selectedFxId = id;
+      this.view.selectedFxId = id;
+      this.refreshPanels(true);
+    };
+    this.view.onAutoPlaced = ({ fxId, paramKey, value, point }) => {
+      this.editor.placeAutoNode(fxId, paramKey, value, point);
+    };
+    this.view.onPathRouted = ({ laneIndex, fromStep, toStep, targetFxId }) => {
+      this.editor.placePathRoute(laneIndex, fromStep, toStep, targetFxId);
+    };
+    this.view.onFxChained = ({ fromFxId, toFxId }) => {
+      this.editor.placeFxRoute(fromFxId, toFxId);
+    };
     this.view.onCursorMoved = () => this.refreshPanels();
     this.view.onDoubleClick = () => this.editor.placeNote();
     this.view.onTilesDropped = (s, t) => this.editor.dropTiles(s, t);
@@ -1188,9 +1527,8 @@ export class JacquardUI {
     this.tilePanel = el("div", "panel");
     this.soundPanel = el("div", "panel hidden");
     this.lockPanel = el("div", "panel hidden");
-    this.sendPanel = el("div", "panel hidden");
-    this.right.append(this.tilePanel, this.soundPanel, this.lockPanel);
-    this.left.append(this.sendPanel);
+    this.fxPanel = el("div", "panel hidden");
+    this.right.append(this.tilePanel, this.soundPanel, this.lockPanel, this.fxPanel);
 
     this._buildTransport();
     this.refreshPanels(true);
@@ -1212,13 +1550,6 @@ export class JacquardUI {
     tempoRow.classList.add("tempo-row");
     this.tempoBar = tempoRow;
     this.transport.append(tempoRow);
-
-    this.sendBtn = button("Send FX", () => {
-      this._sendShown = !this._sendShown;
-      this.sendPanel.classList.toggle("hidden", !this._sendShown);
-      this.canvas.focus();
-    }, 62);
-    this.transport.append(this.sendBtn);
 
     // Sketch browser: ‹ title ›  +  New  (auto-save; no Load/Save)
     this.transport.append(el("div", "transport-sep"));
@@ -1245,7 +1576,6 @@ export class JacquardUI {
 
     this.status = el("div", "status");
     this.transport.append(this.status);
-    this._sendShown = false;
 
     // Haiku sticky (reads project.meta)
     this.sticky = el("div", "haiku-sticky hidden");
@@ -1281,9 +1611,9 @@ export class JacquardUI {
   onChanged() {
     this.view.score = this.app.project.score;
     this.view.sequencer = this.app.sequencer;
+    this.view.selectedFxId = this.editor.selectedFxId;
     this.view.rebuild();
     this.refreshPanels(true);
-    this.buildSendPanel();
     this.onSketchMetaChanged();
     this.app.scheduleSave();
   }
@@ -1292,7 +1622,7 @@ export class JacquardUI {
     this.buildTilePanel();
     this.buildSoundPanel();
     this.buildLockPanel();
-    if (force) this.buildSendPanel();
+    this.buildFxPanel();
   }
 
   buildTilePanel() {
@@ -1506,57 +1836,45 @@ export class JacquardUI {
     }
   }
 
-  buildSendPanel() {
-    const panel = this.sendPanel;
-    const shown = !panel.classList.contains("hidden");
-    panel.innerHTML = "";
-    const title = el("div", "panel-title", "Send FX");
-    const close = button("×", () => {
-      this._sendShown = false;
+  buildFxPanel() {
+    const panel = this.fxPanel;
+    ensureFxLists(this.editor.score);
+    const mod = this.editor.score.fxModules.find((m) => m.id === this.editor.selectedFxId);
+    if (!mod) {
       panel.classList.add("hidden");
-    }, 28);
-    close.classList.add("panel-close");
-    title.append(close);
-    panel.append(title);
+      return;
+    }
+    panel.classList.remove("hidden");
+    panel.innerHTML = "";
+    const def = FxTypes[mod.type] || FxTypes.delay;
+    panel.append(el("div", "panel-title", def.name));
     const body = el("div", "panel-body");
     panel.append(body);
-    const fx = this.editor.project.fx;
-    const touchFx = () => this.app.scheduleSave();
-    body.append(el("div", "caption", "Reverb"));
-    body.append(barRow("Size", Ranges.amount(0, 1), () => fx.reverbSize, (v) => {
-      fx.reverbSize = v;
-      touchFx();
-    }));
-    body.append(barRow("Damp", Ranges.amount(0, 1), () => fx.reverbDamp, (v) => {
-      fx.reverbDamp = v;
-      touchFx();
-    }));
-    body.append(barRow("Width", Ranges.amount(0, 1), () => fx.reverbWidth, (v) => {
-      fx.reverbWidth = v;
-      touchFx();
-    }));
+    body.append(el("div", "caption",
+      "Gold ◆ next to a param: drag onto the grid = automation. " +
+      "⌥/⌘-drag from a step to this pedal = path send window. " +
+      "Drag pedal→pedal = chain."));
     body.append(el("div", "divider"));
-    body.append(el("div", "caption", "Delay"));
-    body.append(chooser("Time", DelayTime.Names,
-      () => DelayTime.nearest(fx.delayBeats),
-      (i) => {
-        fx.delayBeats = DelayTime.Beats[i];
-        touchFx();
-      }));
-    body.append(barRow("Feedback", Ranges.amount(0, SendFx.MaxFeedback),
-      () => fx.delayFeedback, (v) => {
-        fx.delayFeedback = v;
-        touchFx();
-      }));
-    body.append(barRow("Tone", Ranges.amount(0, 1), () => fx.delayTone, (v) => {
-      fx.delayTone = v;
-      touchFx();
-    }));
-    body.append(barRow("Spread", Ranges.amount(0, 1), () => fx.delaySpread, (v) => {
-      fx.delaySpread = v;
-      touchFx();
-    }));
-    if (!shown && !this._sendShown) panel.classList.add("hidden");
+    for (const p of def.params) {
+      body.append(barRow(
+        p.label,
+        Ranges.amount(p.min, p.max),
+        () => mod.params[p.key] ?? p.def,
+        (v) => {
+          mod.params[p.key] = v;
+          this.app.scheduleSave();
+          this.view.paint();
+        },
+      ));
+    }
+    body.append(el("div", "divider"));
+    body.append(button("Delete pedal", () => {
+      this.editor.deleteAtCursor();
+      this.editor.selectedFxId = null;
+      this.view.selectedFxId = null;
+      this.refreshPanels(true);
+      this.canvas.focus();
+    }, 90));
   }
 
   update() {
