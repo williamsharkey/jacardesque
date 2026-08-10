@@ -966,6 +966,7 @@ export class ScoreView {
     if (this._instMoveDrag) {
       const pos = this.localPoint(e);
       const d = this._instMoveDrag;
+      this.canvas.style.cursor = "grabbing";
       const dist = Math.hypot(pos.x - d.origin.x, pos.y - d.origin.y);
       if (!d.armed) {
         if (dist < 5) return;
@@ -2041,19 +2042,23 @@ export class ScoreView {
         x: pos.x,
         y: pos.y,
       };
+      this.canvas.style.cursor = "";
     } else {
-      const inst = findInstAt(this.score, point);
-      if (inst) {
-        const def = InstTypes[inst.type] || InstTypes.fm;
+      const instHit = this._hitInstWidget(pos);
+      if (instHit) {
+        const inst = this.score.instruments.find((m) => m.id === instHit.instId);
+        const def = InstTypes[inst?.type] || InstTypes.fm;
+        const gripHint = instHit.kind === "grip"
+          ? " — drag the dotted handle to move"
+          : " — scrub bars · drag a value onto the grid";
         tip = {
           kind: "inst",
-          id: inst.id,
-          text: def.name + " · CH" + (inst.channel | 0) +
-            " — lanes bind by nearest end-marker (term) to this left corner; " +
-            "scrub bars or drag a value onto the grid",
+          id: instHit.instId,
+          text: (def.name || "Instrument") + " · CH" + ((inst?.channel | 0) || 1) + gripHint,
           x: pos.x,
           y: pos.y,
         };
+        this.canvas.style.cursor = instHit.kind === "grip" ? "grab" : "ew-resize";
       } else {
         const fx = findFxAt(this.score, point);
         if (fx) {
@@ -2068,6 +2073,9 @@ export class ScoreView {
             x: pos.x,
             y: pos.y,
           };
+          this.canvas.style.cursor = "default";
+        } else {
+          this.canvas.style.cursor = "";
         }
       }
     }
@@ -2078,6 +2086,7 @@ export class ScoreView {
       (prev && tip && prev.kind === tip.kind && prev.id === tip.id && prev.text === tip.text);
     this._hoverTip = tip;
     this.canvas.title = tip?.text || "";
+    if (!tip) this.canvas.style.cursor = "";
     if (!same) this.paint();
   }
 
@@ -2173,7 +2182,8 @@ export class ScoreView {
     const w = mod.w * Style.StrideX - Style.Gap;
     const h = mod.h * Style.StrideY - Style.Gap;
     const pad = 4;
-    const topH = 18;
+    // Tall grippy handle so drag-to-move is obvious
+    const topH = 24;
     const pageH = 14;
     const grip = { x: o.x + pad, y: o.y + pad, w: w - pad * 2, h: topH };
     const pageCount = Math.max(1, Math.ceil(InstParamBars.length / INST_PARAMS_PER_PAGE));
@@ -2183,8 +2193,8 @@ export class ScoreView {
     const start = page * INST_PARAMS_PER_PAGE;
     const pageParams = InstParamBars.slice(start, start + INST_PARAMS_PER_PAGE);
     const bars = [];
-    let y = o.y + pad + topH + 3;
-    const rowH = 16;
+    let y = o.y + pad + topH + 2;
+    const rowH = 15;
     for (const p of pageParams) {
       bars.push({
         key: p.key,
@@ -2193,7 +2203,7 @@ export class ScoreView {
         max: p.max,
         def: p.def,
         row: { x: o.x + pad, y, w: w - pad * 2, h: rowH },
-        bar: { x: o.x + pad + 2, y: y + 2, w: w - pad * 2 - 4, h: 11 },
+        bar: { x: o.x + pad + 2, y: y + 1, w: w - pad * 2 - 4, h: 12 },
       });
       y += rowH;
     }
@@ -2281,20 +2291,36 @@ export class ScoreView {
       ctx.stroke();
     }
 
-    // Grip / type label
-    ctx.fillStyle = selected ? "#334155" : "#1e293b";
-    roundRect(ctx, grip.x, grip.y, grip.w, grip.h, 3);
+    // Grippy move handle — dotted grab pad + short name
+    ctx.fillStyle = selected ? "#3b4f66" : "#243447";
+    roundRect(ctx, grip.x, grip.y, grip.w, grip.h, 4);
     ctx.fill();
-    ctx.strokeStyle = withAlpha(col, 0.7);
-    ctx.lineWidth = 1;
-    roundRect(ctx, grip.x + 0.5, grip.y + 0.5, grip.w - 1, grip.h - 1, 3);
+    ctx.strokeStyle = selected ? "#e0f2fe" : withAlpha(col, 0.85);
+    ctx.lineWidth = selected ? 1.5 : 1.1;
+    roundRect(ctx, grip.x + 0.5, grip.y + 0.5, grip.w - 1, grip.h - 1, 4);
     ctx.stroke();
+    // Grabber dots (left)
+    const gcx = grip.x + 14;
+    const gcy = grip.y + grip.h / 2;
+    ctx.fillStyle = selected ? "#f1f5f9" : "#94a3b8";
+    for (let col = -1; col <= 1; col++) {
+      for (let row = -1; row <= 1; row++) {
+        ctx.beginPath();
+        ctx.arc(gcx + col * 3.4, gcy + row * 3.4, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // Title + subtle drag hint
     const title = instrumentShortLabel(this.score, mod);
     ctx.fillStyle = "#e0f2fe";
-    ctx.font = "700 9px system-ui,sans-serif";
-    ctx.textAlign = "center";
+    ctx.font = "700 10px system-ui,sans-serif";
+    ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText(title, grip.x + grip.w / 2, grip.y + grip.h / 2);
+    ctx.fillText(title, grip.x + 28, grip.y + grip.h / 2 - 1);
+    ctx.fillStyle = withAlpha("#94a3b8", 0.95);
+    ctx.font = "600 8px system-ui,sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("⠿ drag", grip.x + grip.w - 6, grip.y + grip.h / 2);
 
     // Param bars from live patch
     for (const row of bars) {
@@ -2310,15 +2336,17 @@ export class ScoreView {
       const fw = Math.max(2, b.w * Math.min(1, Math.max(0, t)));
       roundRect(ctx, b.x, b.y, fw, b.h, 2);
       ctx.fill();
-      ctx.fillStyle = "#e2e8f0";
-      ctx.font = "600 8px system-ui,sans-serif";
+      // Readable full-ish names (16–20 chars fit on 4-cell pedal)
+      const valStr = formatAutoShort(row.key, val);
+      ctx.fillStyle = "#f1f5f9";
+      ctx.font = "600 9px system-ui,sans-serif";
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(
-        row.label + " " + formatAutoShort(row.key, val),
-        b.x + 3,
-        b.y + b.h / 2,
-      );
+      ctx.fillText(row.label, b.x + 3, b.y + b.h / 2);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "600 8px system-ui,sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(valStr, b.x + b.w - 3, b.y + b.h / 2);
     }
     // Page strip: ‹ · · · ›
     const { pageStrip, prevHit, nextHit, page, pageCount } = L;
@@ -3908,10 +3936,11 @@ export class JacquardUI {
     if (!this.dockInstLeft || !this.dockInstRight) return;
     this.dockInstLeft.innerHTML = "";
     this.dockInstRight.innerHTML = "";
-    // Representative presets per family (full 30 live in ground INST menu)
+    // Representative presets per family (full catalog in ground INST menu)
     const keys = [
       "kick-punch", "snare-crisp", "hat-closed", "bass-sub",
       "pad-warm", "bell-chime", "pluck-nylon", "fm-lead",
+      "string-nylon", "wave-soft", "organ-church",
     ];
     const mid = Math.ceil(keys.length / 2);
     const leftKeys = keys.slice(0, mid);

@@ -34,12 +34,15 @@ const DEMO_NOTE = {
   bell: "E5",
   pluck: "A4",
   fm: "E4",
+  string: "A3",
+  wave: "C4",
+  organ: "C3",
 };
 
 export function instrumentLab() {
   const p = new Project();
   p.title = "Instrument lab";
-  p.haiku = "Thirty voices muted / flip ON one switch at a time / rate what you keep";
+  p.haiku = "Catalog voices muted / flip ON one switch at a time / rate what you keep";
   p.tempo = 100;
   p.gridW = 48;
   p.gridH = 40;

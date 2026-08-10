@@ -15,25 +15,32 @@ import {
 } from "./instruments.js";
 import { newFxId, fxOccupies, findFxAt } from "./fx-model.js";
 
-/** All instrument params (paginated on the pedal: 3 bars + page dots). */
+/**
+ * All instrument params (paginated on the pedal: 3 bars + page dots).
+ * Labels ~12–18 chars (readable on the 4-cell-wide pedal; value on the right).
+ */
 export const InstParamBars = [
-  { key: "level", label: "Lvl", target: ParamTargets.Level, min: 0, max: 1, def: 0.45 },
-  { key: "pan", label: "Pan", target: ParamTargets.Pan, min: -1, max: 1, def: 0 },
-  { key: "index", label: "Idx", target: ParamTargets.ModIndex, min: 0, max: 8, def: 1.0 },
-  { key: "moddecay", label: "MDc", target: ParamTargets.ModDecay, min: 0.01, max: 2, def: 0.18 },
-  { key: "ratio", label: "Rat", target: ParamTargets.ModRatio, min: 0.25, max: 8, def: 2 },
-  { key: "feedback", label: "Fb", target: ParamTargets.Feedback, min: 0, max: 4, def: 0.15 },
-  { key: "carattack", label: "Atk", target: ParamTargets.CarAttack, min: 0.001, max: 1, def: 0.005 },
-  { key: "carrelease", label: "Rel", target: ParamTargets.CarRelease, min: 0.01, max: 3, def: 0.18 },
-  { key: "pitchsweep", label: "PSw", target: ParamTargets.PitchSweep, min: -8, max: 8, def: 0 },
-  { key: "pitchdecay", label: "PDc", target: ParamTargets.PitchDecay, min: 0.01, max: 1, def: 0.05 },
-  { key: "gate", label: "Gat", target: ParamTargets.Gate, min: 0.05, max: 4, def: 1 },
-  { key: "rsend", label: "Rvb", target: ParamTargets.ReverbSend, min: 0, max: 1, def: 0.1 },
-  { key: "dsend", label: "Dly", target: ParamTargets.DelaySend, min: 0, max: 1, def: 0.05 },
+  { key: "level", label: "Output Level", target: ParamTargets.Level, min: 0, max: 1, def: 0.45 },
+  { key: "pan", label: "Stereo Pan", target: ParamTargets.Pan, min: -1, max: 1, def: 0 },
+  { key: "index", label: "Modulation Index", target: ParamTargets.ModIndex, min: 0, max: 8, def: 1.0 },
+  { key: "moddecay", label: "Modulator Decay", target: ParamTargets.ModDecay, min: 0.01, max: 2, def: 0.18 },
+  { key: "ratio", label: "Modulator Ratio", target: ParamTargets.ModRatio, min: 0.25, max: 8, def: 2 },
+  { key: "feedback", label: "Operator Feedback", target: ParamTargets.Feedback, min: 0, max: 4, def: 0.15 },
+  { key: "carattack", label: "Carrier Attack", target: ParamTargets.CarAttack, min: 0.001, max: 1, def: 0.005 },
+  { key: "carrelease", label: "Carrier Release", target: ParamTargets.CarRelease, min: 0.01, max: 3, def: 0.18 },
+  { key: "pitchsweep", label: "Pitch Env Sweep", target: ParamTargets.PitchSweep, min: -8, max: 8, def: 0 },
+  { key: "pitchdecay", label: "Pitch Env Decay", target: ParamTargets.PitchDecay, min: 0.01, max: 1, def: 0.05 },
+  { key: "gate", label: "Note Gate Scale", target: ParamTargets.Gate, min: 0.05, max: 4, def: 1 },
+  { key: "rsend", label: "Reverb Send Amt", target: ParamTargets.ReverbSend, min: 0, max: 1, def: 0.1 },
+  { key: "dsend", label: "Delay Send Amt", target: ParamTargets.DelaySend, min: 0, max: 1, def: 0.05 },
 ];
 
 /** Params visible per page on the pedal (excluding grip + page strip). */
 export const INST_PARAMS_PER_PAGE = 3;
+
+/** Footprint wide enough for readable param names (~16–20 chars). */
+export const INST_FOOTPRINT_W = 4;
+export const INST_FOOTPRINT_H = 4;
 
 export const InstTypes = Object.fromEntries(
   InstrumentCatalog.map((p) => [p.key, {
@@ -42,9 +49,9 @@ export const InstTypes = Object.fromEntries(
     instrument: p.engine,
     catalogKey: p.key,
     category: p.category,
-    w: 3,
+    w: INST_FOOTPRINT_W,
     // grip + 3 bars + page strip
-    h: 4,
+    h: INST_FOOTPRINT_H,
   }]),
 );
 // Legacy aliases so old sketches / dock keys still resolve
@@ -144,7 +151,7 @@ export function instrumentShortLabel(score, inst) {
  * Find a free cell near `near` for a new instrument footprint.
  * Prefers below-right of the note/term so underlight paths stay short.
  */
-export function findInstrumentSpawnCell(score, near, w = 3, h = 4) {
+export function findInstrumentSpawnCell(score, near, w = INST_FOOTPRINT_W, h = INST_FOOTPRINT_H) {
   ensureInstruments(score);
   const gw = score.gridW || 32;
   const gh = score.gridH || 16;

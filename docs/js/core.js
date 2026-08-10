@@ -194,7 +194,7 @@ export function clonePatch(p) {
 
 export const PatchBank = {
   /** Raised so Instrument lab can host the full 30-preset catalog. */
-  Channels: 32,
+  Channels: 40,
   clamp(ch) {
     return Math.min(this.Channels, Math.max(1, ch | 0));
   },

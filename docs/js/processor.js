@@ -159,6 +159,11 @@ class Voice {
     this.feedback2 = 0;
     this.noise = 0;
     this.filter = 0;
+    this.ksNeedInit = true; // Karplus–Strong delay line
+    this.ksBuf = null;
+    this.ksLen = 0;
+    this.ksPos = 0;
+    this.ksPrev = 0;
     this.seed = (note.startSample * 1103515245 + 12345) >>> 0 || 1;
     this.increment = note.frequency / sampleRate;
     const g = panGains(note);
@@ -205,11 +210,17 @@ class Voice {
       case 5: sample = this.renderPad(note, time, env); break;
       case 6: sample = this.renderBell(note, time, env); break;
       case 7: sample = this.renderPluck(note, time, env); break;
+      case 8: sample = this.renderKarplus(note, time, env); break;
+      case 9: sample = this.renderWave(note, time, env); break;
+      case 10: sample = this.renderOrgan(note, time, env); break;
       default: sample = this.renderFm(note, time, env); break;
     }
 
     // Soft one-pole tone control — tames digital grit without dulling the note.
-    const cutoff = inst === 3 ? 0.55 : inst === 5 ? 0.12 : 0.28;
+    const cutoff = inst === 3 ? 0.55
+      : inst === 5 || inst === 10 ? 0.12
+      : inst === 8 ? 0.22
+      : 0.28;
     this.filter += (sample - this.filter) * cutoff;
     return this.filter * note.level;
   }
@@ -305,6 +316,104 @@ class Voice {
     this.carrierPhase = FastMath.frac(this.carrierPhase + increment);
     this.modulatorPhase = FastMath.frac(this.modulatorPhase + increment * note.modulatorRatio);
     return out * 0.9;
+  }
+
+  /**
+   * Karplus–Strong physical string (public-domain algorithm; classic DSP).
+   * Uses a delay line filled with noise; lowpass feedback via avg of neighbors.
+   * Params: feedback→damping, modulatorDecay→string loss, modulationIndex→brightness.
+   */
+  renderKarplus(note, time, env) {
+    if (!this.ksBuf || this.ksNeedInit) {
+      // Period in samples at current pitch
+      const period = Math.max(4, Math.min(2048, Math.round(1 / Math.max(this.increment, 1e-6))));
+      this.ksBuf = new Float32Array(period);
+      for (let i = 0; i < period; i++) this.ksBuf[i] = this.rand() * 0.9;
+      this.ksLen = period;
+      this.ksPos = 0;
+      this.ksNeedInit = false;
+      this.ksPrev = 0;
+    }
+    const damping = 0.5 + Math.min(0.49, Math.max(0, note.feedback) * 0.08);
+    // Higher modulatorDecay = faster loss (brighter/shorter if low)
+    const loss = Math.min(0.02, 0.001 + (note.modulatorDecay || 0.1) * 0.01);
+    const bright = Math.min(1, Math.max(0.2, (note.modulationIndex || 1) / 4));
+    const i0 = this.ksPos;
+    const i1 = (i0 + 1) % this.ksLen;
+    let y = (this.ksBuf[i0] + this.ksBuf[i1]) * 0.5 * damping;
+    y = y * (1 - loss) + this.ksPrev * loss;
+    // Mild brightness mix of raw sample
+    const out = (y * (0.55 + bright * 0.45)) * env;
+    this.ksBuf[i0] = y;
+    this.ksPrev = y;
+    this.ksPos = i1;
+    return out * 0.85;
+  }
+
+  /**
+   * Simple wavetable: morph sine→triangle→square via modulationIndex (0–4).
+   * Public-domain classic waveshapes — no external bank required.
+   */
+  renderWave(note, time, env) {
+    const scale = pitchScale(note, time);
+    const increment = this.increment * scale;
+    const phase = this.carrierPhase;
+    // morph 0=sine, 1=tri, 2=saw-ish, 3+=pulse
+    const morph = Math.min(4, Math.max(0, note.modulationIndex || 0));
+    let s = 0;
+    const twoPi = FastMath.TwoPi;
+    if (morph < 1) {
+      const a = FastMath.sin(twoPi * phase);
+      const t = 1 - 4 * Math.abs(phase - 0.5); // triangle
+      s = a * (1 - morph) + t * morph;
+    } else if (morph < 2) {
+      const t = 1 - 4 * Math.abs(phase - 0.5);
+      const saw = 2 * phase - 1;
+      const m = morph - 1;
+      s = t * (1 - m) + saw * m;
+    } else {
+      const saw = 2 * phase - 1;
+      const pw = 0.15 + Math.min(0.7, (morph - 2) * 0.2);
+      const pulse = phase < pw ? 1 : -1;
+      const m = Math.min(1, morph - 2);
+      s = saw * (1 - m) + pulse * m;
+    }
+    // Mild fold from feedback
+    const drive = 1 + Math.min(2, note.feedback || 0) * 0.8;
+    s = Math.tanh(s * drive);
+    this.carrierPhase = FastMath.frac(phase + increment);
+    return s * env * 0.7;
+  }
+
+  /**
+   * Additive organ — 4 harmonic drawbars (public-domain additive synth).
+   * modulatorRatio skews harmonic mix; feedback = key click; index = brilliance.
+   */
+  renderOrgan(note, time, env) {
+    const scale = pitchScale(note, time);
+    const inc = this.increment * scale;
+    const twoPi = FastMath.TwoPi;
+    const brill = Math.min(3, Math.max(0.3, note.modulationIndex || 1));
+    // Drawbar levels inspired by Hammond 16' 8' 4' 2'
+    const d16 = 0.55;
+    const d8 = 0.9;
+    const d4 = 0.45 * brill;
+    const d2 = 0.25 * brill * brill * 0.35;
+    const skew = Math.min(2, Math.max(0.5, note.modulatorRatio || 1));
+    const a = FastMath.sin(twoPi * this.carrierPhase) * d16;
+    const b = FastMath.sin(twoPi * this.modulatorPhase) * d8;
+    const c = FastMath.sin(twoPi * this.phase2) * d4;
+    // 3rd partial uses carrierPhase * 3 via separate increment
+    const d = FastMath.sin(twoPi * FastMath.frac(this.carrierPhase * (2 + skew))) * d2;
+    this.carrierPhase = FastMath.frac(this.carrierPhase + inc * 0.5); // 16'
+    this.modulatorPhase = FastMath.frac(this.modulatorPhase + inc); // 8'
+    this.phase2 = FastMath.frac(this.phase2 + inc * 2); // 4'
+    let out = (a + b + c + d) * 0.35;
+    // Key click (noise) from feedback
+    if (time < 0.012 && (note.feedback || 0) > 0.05) {
+      out += this.rand() * (1 - time / 0.012) * note.feedback * 0.15;
+    }
+    return out * env;
   }
 }
 

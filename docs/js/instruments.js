@@ -1,8 +1,11 @@
-// Named instrument catalog — 30 presets over 8 synthesis engines.
-// patch.instrument = engine id 0–7 (what the worklet renders).
+// Named instrument catalog — presets over synthesis engines.
+// patch.instrument = engine id 0–10 (what the worklet renders).
 // UI selection uses catalog keys (kick-deep, pad-warm, …).
 
 import catalog from "./instrument-catalog.json" with { type: "json" };
+
+/** Highest engine id the worklet knows (inclusive). */
+export const MAX_ENGINE = 10;
 
 /** Engine algorithms (processor switch). */
 export const Instruments = {
@@ -14,17 +17,25 @@ export const Instruments = {
   pad: 5,
   bell: 6,
   pluck: 7,
+  string: 8,   // Karplus–Strong physical model
+  wave: 9,     // classic wavetable morph
+  organ: 10,   // additive organ
 };
 
 export const EngineNames = [
   "FM", "Kick", "Snare", "Hat", "Bass", "Pad", "Bell", "Pluck",
+  "String", "Wave", "Organ",
 ];
 
-/** Full catalog of 30 named presets (agent-designed + level-tuned). */
+function clampEngine(n) {
+  return Math.min(MAX_ENGINE, Math.max(0, n | 0));
+}
+
+/** Full catalog of named presets (agent-designed + level-tuned). */
 export const InstrumentCatalog = catalog.map((p, i) => ({
   ...p,
   index: i,
-  engine: Math.min(7, Math.max(0, p.engine | 0)),
+  engine: clampEngine(p.engine),
 }));
 
 export const InstrumentKeys = InstrumentCatalog.map((p) => p.key);
@@ -46,7 +57,7 @@ export function parseInstrument(key) {
   if (key == null || key === "") return 0;
   if (typeof key === "number") {
     // Treat as engine id for legacy patches
-    return Math.min(7, Math.max(0, key | 0));
+    return clampEngine(key);
   }
   const s = String(key).toLowerCase();
   const aliased = LEGACY_ALIAS[s] || s;
